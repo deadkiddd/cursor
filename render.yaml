@@ -4,7 +4,8 @@ services:
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python render_bot_stable.py
+    startCommand: render_bot_improved.py
+
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
@@ -12,3 +13,4 @@ services:
         sync: false
       - key: PORT
         value: 10000
+

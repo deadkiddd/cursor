@@ -213,6 +213,17 @@ async def send_admin_notification(context, title, user, additional_info=""):
     except Exception as e:
         logger.error(f"Ошибка отправки уведомления администратору: {e}")
 
+def build_main_menu_keyboard():
+    """Собрать главное меню в виде сетки кнопок"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔗 Chains", callback_data="open_crypto"), InlineKeyboardButton("💳 Wallets", callback_data="show_address"), InlineKeyboardButton("⚙️ Global Settings", callback_data="show_help")],
+        [InlineKeyboardButton("📡 Signals", callback_data="show_prices"), InlineKeyboardButton("👫 Copytrade", callback_data="contact_operator")],
+        [InlineKeyboardButton("🤝 Presales", callback_data="open_payment_cards"), InlineKeyboardButton("🎯 Auto Snipe", callback_data="open_transfers")],
+        [InlineKeyboardButton("🕓 Active Orders", callback_data="show_status"), InlineKeyboardButton("📈 Positions", callback_data="show_prices")],
+        [InlineKeyboardButton("⭐ Premium", callback_data="open_payment_cards"), InlineKeyboardButton("💰 Referral", callback_data="contact_operator"), InlineKeyboardButton("🔁 Bridge", callback_data="open_transfers")],
+        [InlineKeyboardButton("⚡ BUY & SELL NOW!", callback_data="open_payment_cards")]
+    ])
+
 # Обработчики бота
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /start"""
@@ -266,24 +277,18 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /menu"""
     if not update.message:
         return
-        
+
     user = update.effective_user
-    
+
     # Проверка rate limit
     if not check_rate_limit(user.id):
         await update.message.reply_text("⚠️ Слишком много сообщений. Подождите немного.")
         return
-    
-    keyboard = [
-        [InlineKeyboardButton("💳 Оплата картами", callback_data="payment_cards")],
-        [InlineKeyboardButton("💸 Переводы", callback_data="transfers")],
-        [InlineKeyboardButton("₿ Криптовалюты", callback_data="crypto")],
-        [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
-        [InlineKeyboardButton("💰 Прайс-лист", callback_data="price_list")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text("Выберите категорию услуг:", reply_markup=reply_markup)
+
+    await update.message.reply_text(
+        "Выберите раздел:",
+        reply_markup=build_main_menu_keyboard()
+    )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /help"""
@@ -616,18 +621,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif query.data == "back_to_menu":
         # Редактируем текущее сообщение с меню
-        menu_text = "Выберите категорию услуг:"
-        keyboard = [
-            [InlineKeyboardButton("💳 Оплата картами", callback_data="payment_cards")],
-            [InlineKeyboardButton("💸 Переводы", callback_data="transfers")],
-            [InlineKeyboardButton("₿ Криптовалюты", callback_data="crypto")],
-            [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
-            [InlineKeyboardButton("💰 Прайс-лист", callback_data="price_list")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            text=menu_text,
-            reply_markup=reply_markup
+            text="Выберите раздел:",
+            reply_markup=build_main_menu_keyboard()
         )
         
     # Обработчики выбора сервисов для карт
@@ -746,6 +742,35 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    # Алиасы для нового главного меню
+    elif query.data == "open_payment_cards":
+        # перенаправляем к существующему разделу карт
+        await button_callback(Update(update.update_id, callback_query=update.callback_query), context)
+        query.data = "payment_cards"
+        return
+    elif query.data == "open_transfers":
+        query.data = "transfers"
+        await button_callback(Update(update.update_id, callback_query=update.callback_query), context)
+        return
+    elif query.data == "open_crypto":
+        query.data = "crypto"
+        await button_callback(Update(update.update_id, callback_query=update.callback_query), context)
+        return
+    elif query.data == "show_address":
+        # Показать реквизиты
+        temp_update = Update(update.update_id)
+        temp_update.message = query.message
+        await address_command(temp_update, context)
+        return
+    elif query.data == "show_prices":
+        temp_update = Update(update.update_id)
+        temp_update.message = query.message
+        await price_command(temp_update, context)
+        return
+    elif query.data == "show_status":
+        await query.edit_message_text("✅ Бот работает нормально. Время работы: " + get_uptime(), reply_markup=build_main_menu_keyboard())
+        return
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений"""

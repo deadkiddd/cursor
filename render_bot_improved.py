@@ -33,6 +33,33 @@ RATE_LIMIT_WINDOW = 60  # секунд
 # Кэш для rate limiting
 user_message_times = {}
 
+# Система состояний пользователей
+user_states = {}
+
+# Комиссии для разных услуг
+COMMISSION_RATES = {
+    'netflix': 0.10,
+    'steam': 0.08,
+    'discord': 0.12,
+    'spotify': 0.15,
+    'youtube': 0.13,
+    'twitch': 0.11,
+    'apple_music': 0.14,
+    'google_play': 0.09,
+    'transfer_eu': 0.07,
+    'transfer_us': 0.10,
+    'crypto_btc': 0.03,
+    'crypto_eth': 0.04,
+    'crypto_usdt': 0.02
+}
+
+# Минимальные суммы
+MIN_AMOUNTS = {
+    'cards': 10,
+    'transfers': 10,
+    'crypto': 5
+}
+
 # Флаг для graceful shutdown
 shutdown_flag = False
 
@@ -117,6 +144,52 @@ def escape_markdown(text):
     for char in chars_to_escape:
         text = text.replace(char, f'\\{char}')
     return text
+
+def get_user_state(user_id):
+    """Получить состояние пользователя"""
+    return user_states.get(user_id, {})
+
+def set_user_state(user_id, state_data):
+    """Установить состояние пользователя"""
+    user_states[user_id] = state_data
+
+def clear_user_state(user_id):
+    """Очистить состояние пользователя"""
+    if user_id in user_states:
+        del user_states[user_id]
+
+def calculate_commission(service_type, amount):
+    """Рассчитать комиссию и итоговую сумму"""
+    commission_rate = COMMISSION_RATES.get(service_type, 0.10)
+    commission = amount * commission_rate
+    total_amount = amount + commission
+    return {
+        'original_amount': amount,
+        'commission_rate': commission_rate,
+        'commission': commission,
+        'total_amount': total_amount
+    }
+
+def get_payment_address(service_type):
+    """Получить адрес для оплаты в зависимости от типа услуги"""
+    addresses = {
+        'cards': {
+            'BTC': 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh',
+            'ETH': '0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6',
+            'USDT_TRC20': 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
+        },
+        'transfers': {
+            'BTC': 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh',
+            'ETH': '0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6',
+            'USDT_TRC20': 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
+        },
+        'crypto': {
+            'BTC': 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh',
+            'ETH': '0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6',
+            'USDT_TRC20': 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
+        }
+    }
+    return addresses.get(service_type, addresses['cards'])
 
 async def send_admin_notification(context, title, user, additional_info=""):
     """Отправка уведомления администратору"""
@@ -343,26 +416,37 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if query.data == "payment_cards":
+        # Устанавливаем состояние для выбора сервиса
+        set_user_state(user.id, {
+            'state': 'selecting_service',
+            'service_type': 'cards',
+            'step': 'service_selection'
+        })
+        
         text = """
 💳 **Оплата зарубежными картами:**
 
-Доступные сервисы:
+Выберите сервис для оплаты:
+
+**🎬 Стриминговые сервисы:**
 • Netflix Premium
-• Steam Gift Cards
-• Discord Nitro
 • Spotify Premium
 • YouTube Premium
 • Twitch Subscriptions
+
+**🎮 Игровые платформы:**
+• Steam Gift Cards
+• Discord Nitro
+
+**📱 Мобильные сервисы:**
 • Apple Music
 • Google Play
-• И другие...
 
-Укажите:
-1. Сервис
-2. Сумму
-3. Длительность подписки
-
-Пример: "Netflix Premium, $15, 1 месяц"
+**💡 Как это работает:**
+1. Выберите сервис
+2. Укажите сумму
+3. Получите реквизиты для оплаты
+4. После оплаты получите карту
 
 🔒 **Гарантии:**
 • 100% успешность операций
@@ -370,37 +454,40 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Поддержка 24/7
 """
         keyboard = [
-            [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
+            [InlineKeyboardButton("🎬 Netflix", callback_data="service_netflix")],
+            [InlineKeyboardButton("🎮 Steam", callback_data="service_steam")],
+            [InlineKeyboardButton("🎵 Discord Nitro", callback_data="service_discord")],
+            [InlineKeyboardButton("🎵 Spotify", callback_data="service_spotify")],
+            [InlineKeyboardButton("📺 YouTube Premium", callback_data="service_youtube")],
+            [InlineKeyboardButton("📱 Apple Music", callback_data="service_apple_music")],
             [InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
         
-        # Уведомление администратора о заявке
-        await send_admin_notification(
-            context,
-            "💳 **Заявка на оплату картами!**",
-            user
-        )
-        
     elif query.data == "transfers":
+        # Устанавливаем состояние для переводов
+        set_user_state(user.id, {
+            'state': 'selecting_transfer_type',
+            'service_type': 'transfers',
+            'step': 'transfer_type_selection'
+        })
+        
         text = """
 💸 **Переводы на зарубежные карты:**
 
-Поддерживаемые страны:
-• 🇺🇸 США
-• 🇪🇺 Европа (СЕПА)
-• 🇬🇧 Великобритания
-• 🇨🇦 Канада
-• 🇦🇺 Австралия
-• 🇨🇭 Швейцария
+Выберите тип перевода:
 
-Укажите:
-1. Страну получателя
-2. Сумму
-3. Номер карты получателя
+**🌍 Географические зоны:**
+• Европейские карты (СЕПА)
+• Американские карты
+• Другие страны
 
-Комиссия: 5-12% в зависимости от страны
+**💡 Как это работает:**
+1. Выберите тип перевода
+2. Укажите сумму и детали
+3. Получите реквизиты для оплаты
+4. После оплаты получите карту получателя
 
 🔒 **Безопасность:**
 • Шифрованная передача данных
@@ -408,46 +495,47 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Отслеживание транзакций
 """
         keyboard = [
-            [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
+            [InlineKeyboardButton("🇪🇺 Европейские карты", callback_data="transfer_eu")],
+            [InlineKeyboardButton("🇺🇸 Американские карты", callback_data="transfer_us")],
+            [InlineKeyboardButton("🌍 Другие страны", callback_data="transfer_other")],
             [InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
         
-        # Уведомление администратора о заявке на перевод
-        await send_admin_notification(
-            context,
-            "💸 **Заявка на перевод!**",
-            user
-        )
-        
     elif query.data == "crypto":
+        # Устанавливаем состояние для криптовалют
+        set_user_state(user.id, {
+            'state': 'selecting_crypto_type',
+            'service_type': 'crypto',
+            'step': 'crypto_type_selection'
+        })
+        
         text = """
 ₿ **Криптовалютные операции:**
 
-Поддерживаемые сети:
+Выберите тип операции:
+
+**💱 Покупка/Продажа:**
 • Bitcoin (BTC)
 • Ethereum (ETH)
 • USDT (TRC20/ERC20)
-• USDC (ERC20)
-• BNB (BSC)
 
-Услуги:
-• Покупка криптовалют
-• Продажа криптовалют
-• Переводы между кошельками
-• Конвертация валют
-
-Комиссия: 2-4%
+**💡 Как это работает:**
+1. Выберите криптовалюту
+2. Укажите сумму
+3. Получите реквизиты для оплаты
+4. После оплаты получите криптовалюту
 
 🔒 **Особенности:**
 • Мгновенные транзакции
 • Низкие комиссии
 • Анонимность
-• Глобальная доступность
 """
         keyboard = [
-            [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
+            [InlineKeyboardButton("₿ Bitcoin (BTC)", callback_data="crypto_btc")],
+            [InlineKeyboardButton("Ξ Ethereum (ETH)", callback_data="crypto_eth")],
+            [InlineKeyboardButton("💎 USDT", callback_data="crypto_usdt")],
             [InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -541,6 +629,123 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=menu_text,
             reply_markup=reply_markup
         )
+        
+    # Обработчики выбора сервисов для карт
+    elif query.data.startswith("service_"):
+        service_name = query.data.replace("service_", "")
+        current_state = get_user_state(user.id)
+        current_state['selected_service'] = service_name
+        current_state['state'] = 'entering_amount'
+        current_state['step'] = 'amount_input'
+        set_user_state(user.id, current_state)
+        
+        service_names = {
+            'netflix': 'Netflix Premium',
+            'steam': 'Steam Gift Cards',
+            'discord': 'Discord Nitro',
+            'spotify': 'Spotify Premium',
+            'youtube': 'YouTube Premium',
+            'apple_music': 'Apple Music'
+        }
+        
+        service_display_name = service_names.get(service_name, service_name.title())
+        commission_rate = COMMISSION_RATES.get(service_name, 0.10)
+        
+        text = f"""
+💳 **{service_display_name}**
+
+Выбранный сервис: **{service_display_name}**
+Комиссия: **{commission_rate * 100}%**
+
+💰 **Введите сумму в долларах:**
+(Минимальная сумма: ${MIN_AMOUNTS['cards']})
+
+Пример: `15` или `25.50`
+
+⚠️ **Важно:** Указывайте только числовое значение
+"""
+        keyboard = [
+            [InlineKeyboardButton("🔙 Назад к выбору сервиса", callback_data="payment_cards")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+    # Обработчики выбора типов переводов
+    elif query.data.startswith("transfer_"):
+        transfer_type = query.data.replace("transfer_", "")
+        current_state = get_user_state(user.id)
+        current_state['selected_transfer_type'] = transfer_type
+        current_state['state'] = 'entering_transfer_details'
+        current_state['step'] = 'transfer_details_input'
+        set_user_state(user.id, current_state)
+        
+        transfer_names = {
+            'eu': 'Европейские карты (СЕПА)',
+            'us': 'Американские карты',
+            'other': 'Другие страны'
+        }
+        
+        transfer_display_name = transfer_names.get(transfer_type, transfer_type.upper())
+        commission_rate = COMMISSION_RATES.get(f'transfer_{transfer_type}', 0.10)
+        
+        text = f"""
+💸 **{transfer_display_name}**
+
+Выбранный тип: **{transfer_display_name}**
+Комиссия: **{commission_rate * 100}%**
+
+💰 **Введите сумму в долларах:**
+(Минимальная сумма: ${MIN_AMOUNTS['transfers']})
+
+Пример: `50` или `100.25`
+
+⚠️ **Важно:** Указывайте только числовое значение
+"""
+        keyboard = [
+            [InlineKeyboardButton("🔙 Назад к выбору типа", callback_data="transfers")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+    # Обработчики выбора криптовалют
+    elif query.data.startswith("crypto_"):
+        crypto_type = query.data.replace("crypto_", "")
+        current_state = get_user_state(user.id)
+        current_state['selected_crypto'] = crypto_type
+        current_state['state'] = 'entering_crypto_amount'
+        current_state['step'] = 'crypto_amount_input'
+        set_user_state(user.id, current_state)
+        
+        crypto_names = {
+            'btc': 'Bitcoin (BTC)',
+            'eth': 'Ethereum (ETH)',
+            'usdt': 'USDT (TRC20/ERC20)'
+        }
+        
+        crypto_display_name = crypto_names.get(crypto_type, crypto_type.upper())
+        commission_rate = COMMISSION_RATES.get(f'crypto_{crypto_type}', 0.03)
+        
+        text = f"""
+₿ **{crypto_display_name}**
+
+Выбранная криптовалюта: **{crypto_display_name}**
+Комиссия: **{commission_rate * 100}%**
+
+💰 **Введите сумму в долларах:**
+(Минимальная сумма: ${MIN_AMOUNTS['crypto']})
+
+Пример: `100` или `250.75`
+
+⚠️ **Важно:** Указывайте только числовое значение
+"""
+        keyboard = [
+            [InlineKeyboardButton("🔙 Назад к выбору криптовалюты", callback_data="crypto")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений"""
@@ -554,6 +759,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверка rate limit
     if not check_rate_limit(user.id):
         await update.message.reply_text("⚠️ Слишком много сообщений. Подождите немного.")
+        return
+    
+    # Получаем текущее состояние пользователя
+    current_state = get_user_state(user.id)
+    
+    # Обработка состояний заказа
+    if current_state.get('state') == 'entering_amount':
+        await handle_amount_input(update, context, message_text, current_state)
+        return
+    elif current_state.get('state') == 'entering_transfer_details':
+        await handle_transfer_amount_input(update, context, message_text, current_state)
+        return
+    elif current_state.get('state') == 'entering_crypto_amount':
+        await handle_crypto_amount_input(update, context, message_text, current_state)
         return
     
     # Пересылка сообщения администратору
@@ -587,6 +806,249 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Для получения помощи используйте /help или свяжитесь с оператором @swiwell"
         )
+
+async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE, message_text: str, current_state: dict):
+    """Обработка ввода суммы для карт"""
+    user = update.effective_user
+    
+    try:
+        amount = float(message_text)
+        if amount < MIN_AMOUNTS['cards']:
+            await update.message.reply_text(f"⚠️ Минимальная сумма: ${MIN_AMOUNTS['cards']}")
+            return
+            
+        selected_service = current_state.get('selected_service')
+        service_names = {
+            'netflix': 'Netflix Premium',
+            'steam': 'Steam Gift Cards',
+            'discord': 'Discord Nitro',
+            'spotify': 'Spotify Premium',
+            'youtube': 'YouTube Premium',
+            'apple_music': 'Apple Music'
+        }
+        service_display_name = service_names.get(selected_service, selected_service.title())
+        
+        # Рассчитываем комиссию
+        calculation = calculate_commission(selected_service, amount)
+        
+        # Обновляем состояние
+        current_state['amount'] = amount
+        current_state['calculation'] = calculation
+        current_state['state'] = 'payment_ready'
+        set_user_state(user.id, current_state)
+        
+        # Получаем адреса для оплаты
+        payment_addresses = get_payment_address('cards')
+        
+        text = f"""
+💳 **Заказ готов к оплате!**
+
+**📋 Детали заказа:**
+• Сервис: {service_display_name}
+• Сумма: ${amount:.2f}
+• Комиссия ({calculation['commission_rate']*100}%): ${calculation['commission']:.2f}
+• **Итого к оплате: ${calculation['total_amount']:.2f}**
+
+**💳 Реквизиты для оплаты:**
+
+**₿ Bitcoin (BTC):**
+`{payment_addresses['BTC']}`
+
+**Ξ Ethereum (ETH):**
+`{payment_addresses['ETH']}`
+
+**💎 USDT (TRC20):**
+`{payment_addresses['USDT_TRC20']}`
+
+⚠️ **Важно:** 
+• Указывайте комментарий к платежу: `{user.id}`
+• После оплаты свяжитесь с оператором @swiwell
+• Время обработки: 10-30 минут
+
+🔒 **Гарантии:** 100% успешность операций
+"""
+        
+        keyboard = [
+            [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+        # Уведомляем администратора
+        await send_admin_notification(
+            context,
+            f"💳 **Новый заказ карты!**",
+            user,
+            f"Сервис: {service_display_name}\n"
+            f"Сумма: ${amount:.2f}\n"
+            f"Комиссия: ${calculation['commission']:.2f}\n"
+            f"Итого: ${calculation['total_amount']:.2f}"
+        )
+        
+    except ValueError:
+        await update.message.reply_text("⚠️ Пожалуйста, введите корректную сумму (например: 15 или 25.50)")
+
+async def handle_transfer_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE, message_text: str, current_state: dict):
+    """Обработка ввода суммы для переводов"""
+    user = update.effective_user
+    
+    try:
+        amount = float(message_text)
+        if amount < MIN_AMOUNTS['transfers']:
+            await update.message.reply_text(f"⚠️ Минимальная сумма: ${MIN_AMOUNTS['transfers']}")
+            return
+            
+        selected_transfer_type = current_state.get('selected_transfer_type')
+        transfer_names = {
+            'eu': 'Европейские карты (СЕПА)',
+            'us': 'Американские карты',
+            'other': 'Другие страны'
+        }
+        transfer_display_name = transfer_names.get(selected_transfer_type, selected_transfer_type.upper())
+        
+        # Рассчитываем комиссию
+        calculation = calculate_commission(f'transfer_{selected_transfer_type}', amount)
+        
+        # Обновляем состояние
+        current_state['amount'] = amount
+        current_state['calculation'] = calculation
+        current_state['state'] = 'transfer_payment_ready'
+        set_user_state(user.id, current_state)
+        
+        # Получаем адреса для оплаты
+        payment_addresses = get_payment_address('transfers')
+        
+        text = f"""
+💸 **Заказ перевода готов к оплате!**
+
+**📋 Детали заказа:**
+• Тип: {transfer_display_name}
+• Сумма: ${amount:.2f}
+• Комиссия ({calculation['commission_rate']*100}%): ${calculation['commission']:.2f}
+• **Итого к оплате: ${calculation['total_amount']:.2f}**
+
+**💳 Реквизиты для оплаты:**
+
+**₿ Bitcoin (BTC):**
+`{payment_addresses['BTC']}`
+
+**Ξ Ethereum (ETH):**
+`{payment_addresses['ETH']}`
+
+**💎 USDT (TRC20):**
+`{payment_addresses['USDT_TRC20']}`
+
+⚠️ **Важно:** 
+• Указывайте комментарий к платежу: `{user.id}`
+• После оплаты свяжитесь с оператором @swiwell
+• Время обработки: 10-30 минут
+
+🔒 **Безопасность:** Шифрованная передача данных
+"""
+        
+        keyboard = [
+            [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+        # Уведомляем администратора
+        await send_admin_notification(
+            context,
+            f"💸 **Новый заказ перевода!**",
+            user,
+            f"Тип: {transfer_display_name}\n"
+            f"Сумма: ${amount:.2f}\n"
+            f"Комиссия: ${calculation['commission']:.2f}\n"
+            f"Итого: ${calculation['total_amount']:.2f}"
+        )
+        
+    except ValueError:
+        await update.message.reply_text("⚠️ Пожалуйста, введите корректную сумму (например: 50 или 100.25)")
+
+async def handle_crypto_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE, message_text: str, current_state: dict):
+    """Обработка ввода суммы для криптовалют"""
+    user = update.effective_user
+    
+    try:
+        amount = float(message_text)
+        if amount < MIN_AMOUNTS['crypto']:
+            await update.message.reply_text(f"⚠️ Минимальная сумма: ${MIN_AMOUNTS['crypto']}")
+            return
+            
+        selected_crypto = current_state.get('selected_crypto')
+        crypto_names = {
+            'btc': 'Bitcoin (BTC)',
+            'eth': 'Ethereum (ETH)',
+            'usdt': 'USDT (TRC20/ERC20)'
+        }
+        crypto_display_name = crypto_names.get(selected_crypto, selected_crypto.upper())
+        
+        # Рассчитываем комиссию
+        calculation = calculate_commission(f'crypto_{selected_crypto}', amount)
+        
+        # Обновляем состояние
+        current_state['amount'] = amount
+        current_state['calculation'] = calculation
+        current_state['state'] = 'crypto_payment_ready'
+        set_user_state(user.id, current_state)
+        
+        # Получаем адреса для оплаты
+        payment_addresses = get_payment_address('crypto')
+        
+        text = f"""
+₿ **Заказ криптовалюты готов к оплате!**
+
+**📋 Детали заказа:**
+• Криптовалюта: {crypto_display_name}
+• Сумма: ${amount:.2f}
+• Комиссия ({calculation['commission_rate']*100}%): ${calculation['commission']:.2f}
+• **Итого к оплате: ${calculation['total_amount']:.2f}**
+
+**💳 Реквизиты для оплаты:**
+
+**₿ Bitcoin (BTC):**
+`{payment_addresses['BTC']}`
+
+**Ξ Ethereum (ETH):**
+`{payment_addresses['ETH']}`
+
+**💎 USDT (TRC20):**
+`{payment_addresses['USDT_TRC20']}`
+
+⚠️ **Важно:** 
+• Указывайте комментарий к платежу: `{user.id}`
+• После оплаты свяжитесь с оператором @swiwell
+• Время обработки: 10-30 минут
+
+🔒 **Особенности:** Мгновенные транзакции
+"""
+        
+        keyboard = [
+            [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+        # Уведомляем администратора
+        await send_admin_notification(
+            context,
+            f"₿ **Новый заказ криптовалюты!**",
+            user,
+            f"Криптовалюта: {crypto_display_name}\n"
+            f"Сумма: ${amount:.2f}\n"
+            f"Комиссия: ${calculation['commission']:.2f}\n"
+            f"Итого: ${calculation['total_amount']:.2f}"
+        )
+        
+    except ValueError:
+        await update.message.reply_text("⚠️ Пожалуйста, введите корректную сумму (например: 100 или 250.75)")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка ошибок"""
@@ -645,7 +1107,7 @@ def main():
     flask_thread = threading.Thread(target=start_flask, daemon=True)
     flask_thread.start()
     
-    max_retries = 5
+    max_retries = 10  # Увеличиваем количество попыток
     retry_count = 0
     
     while retry_count < max_retries and not shutdown_flag:
@@ -674,23 +1136,26 @@ def main():
                 read_timeout=30,
                 write_timeout=30,
                 connect_timeout=30,
-                pool_timeout=30
+                pool_timeout=30,
+                timeout=30
             )
             
         except Conflict as e:
             logger.warning(f"Конфликт экземпляров бота: {e}")
             retry_count += 1
             if retry_count < max_retries:
-                logger.info(f"Ожидание 10 секунд перед повторной попыткой...")
-                time.sleep(10)
+                wait_time = min(30, retry_count * 10)  # Увеличиваем время ожидания
+                logger.info(f"Ожидание {wait_time} секунд перед повторной попыткой...")
+                time.sleep(wait_time)
             continue
             
         except Exception as e:
             logger.error(f"Критическая ошибка при запуске бота: {e}")
             retry_count += 1
             if retry_count < max_retries:
-                logger.info(f"Ожидание 30 секунд перед повторной попыткой...")
-                time.sleep(30)
+                wait_time = min(60, retry_count * 15)  # Увеличиваем время ожидания
+                logger.info(f"Ожидание {wait_time} секунд перед повторной попыткой...")
+                time.sleep(wait_time)
             else:
                 logger.error("Превышено максимальное количество попыток. Завершение работы.")
                 break

@@ -54,7 +54,10 @@ def get_stats():
     })
 
 def start_flask():
-    app.run(host='0.0.0.0', port=PORT)
+    try:
+        app.run(host='0.0.0.0', port=PORT, debug=False)
+    except Exception as e:
+        logger.error(f"Ошибка запуска Flask: {e}")
 
 def get_uptime():
     """Получить время работы бота"""
@@ -520,24 +523,31 @@ def main():
     flask_thread = threading.Thread(target=start_flask, daemon=True)
     flask_thread.start()
     
-    # Создание приложения
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Добавление обработчиков
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("menu", menu_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("address", address_command))
-    application.add_handler(CommandHandler("price", price_command))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Добавление обработчика ошибок
-    application.add_error_handler(error_handler)
-    
-    # Запуск бота
-    logger.info("Запуск улучшенного бота...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        # Создание приложения с обработкой ошибок
+        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        
+        # Добавление обработчиков
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(CommandHandler("menu", menu_command))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("address", address_command))
+        application.add_handler(CommandHandler("price", price_command))
+        application.add_handler(CallbackQueryHandler(button_callback))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # Добавление обработчика ошибок
+        application.add_error_handler(error_handler)
+        
+        # Запуск бота
+        logger.info("Запуск исправленного бота...")
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        
+    except Exception as e:
+        logger.error(f"Критическая ошибка при запуске бота: {e}")
+        # Попытка перезапуска через 30 секунд
+        time.sleep(30)
+        main()
 
 if __name__ == '__main__':
     main()

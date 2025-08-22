@@ -5,12 +5,12 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: render_bot_improved.py
-
-    envVars:
+        envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: ADMIN_ID
         sync: false
       - key: PORT
         value: 10000
+
 

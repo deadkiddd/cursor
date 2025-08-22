@@ -27,7 +27,7 @@ PORT = int(os.getenv('PORT', 10000))
 
 # Настройки безопасности
 MAX_MESSAGE_LENGTH = 4096
-RATE_LIMIT_MESSAGES = 5  # сообщений в минуту
+RATE_LIMIT_MESSAGES = 60  # сообщений в минуту
 RATE_LIMIT_WINDOW = 60  # секунд
 
 # Кэш для rate limiting
@@ -108,6 +108,16 @@ def sanitize_text(text):
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     return text[:MAX_MESSAGE_LENGTH]
 
+def escape_markdown(text):
+    """Экранирование специальных символов для Markdown"""
+    if not text:
+        return ""
+    # Экранируем символы Markdown
+    chars_to_escape = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in chars_to_escape:
+        text = text.replace(char, f'\\{char}')
+    return text
+
 async def send_admin_notification(context, title, user, additional_info=""):
     """Отправка уведомления администратору"""
     if not ADMIN_ID:
@@ -133,6 +143,9 @@ async def send_admin_notification(context, title, user, additional_info=""):
 # Обработчики бота
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /start"""
+    if not update.message:
+        return
+        
     user = update.effective_user
     chat_id = update.effective_chat.id
     
@@ -178,6 +191,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /menu"""
+    if not update.message:
+        return
+        
     user = update.effective_user
     
     # Проверка rate limit
@@ -198,6 +214,9 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /help"""
+    if not update.message:
+        return
+        
     user = update.effective_user
     
     # Проверка rate limit
@@ -228,13 +247,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 **Время работы:** Круглосуточно
 
 **Ограничения:**
-• Максимум 5 сообщений в минуту
+• Максимум 60 сообщений в минуту
 • Максимальная длина сообщения: 4096 символов
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 async def address_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /address"""
+    if not update.message:
+        return
+        
     user = update.effective_user
     
     # Проверка rate limit
@@ -242,7 +264,7 @@ async def address_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Слишком много сообщений. Подождите немного.")
         return
     
-    address_text = """
+    address_text = f"""
 🏦 **Реквизиты для оплаты:**
 
 **Банковская карта:**
@@ -255,15 +277,18 @@ BTC: `bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh`
 ETH: `0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6`
 USDT (TRC20): `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`
 
-⚠️ **Важно:** Указывайте комментарий к платежу с вашим Telegram ID: `{user_id}`
+⚠️ **Важно:** Указывайте комментарий к платежу с вашим Telegram ID: `{user.id}`
 
 🔒 **Безопасность:** Все транзакции защищены и отслеживаются
-""".format(user_id=user.id)
+"""
     
     await update.message.reply_text(address_text, parse_mode='Markdown')
 
 async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /price"""
+    if not update.message:
+        return
+        
     user = update.effective_user
     
     # Проверка rate limit
@@ -304,6 +329,9 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка нажатий на кнопки"""
     query = update.callback_query
+    if not query:
+        return
+        
     await query.answer()
     
     user = update.effective_user
@@ -426,7 +454,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
         
     elif query.data == "contact_operator":
-        text = """
+        text = f"""
 📞 **Связаться с оператором:**
 
 Для оформления заказа или получения консультации:
@@ -435,7 +463,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 **Техническая поддержка:** @Deadkid
 
 ⚠️ **Важно:** При обращении указывайте:
-• Ваш Telegram ID: `{user_id}`
+• Ваш Telegram ID: `{user.id}`
 • Выбранную услугу
 • Сумму операции
 • Дополнительные детали
@@ -443,7 +471,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Время ответа: 5-15 минут
 
 🕐 **Время работы:** Круглосуточно
-""".format(user_id=user.id)
+"""
         keyboard = [
             [InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu")],
             [InlineKeyboardButton("💰 Прайс-лист", callback_data="price_list")]
@@ -459,13 +487,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     elif query.data == "price_list":
-        await price_command(update, context)
+        # Создаем временное сообщение для price_command
+        temp_update = Update(0)
+        temp_update.message = query.message
+        await price_command(temp_update, context)
         
     elif query.data == "back_to_menu":
-        await menu_command(update, context)
+        # Создаем временное сообщение для menu_command
+        temp_update = Update(0)
+        temp_update.message = query.message
+        await menu_command(temp_update, context)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений"""
+    if not update.message:
+        return
+        
     user = update.effective_user
     chat_id = update.effective_chat.id
     message_text = sanitize_text(update.message.text)
@@ -478,12 +515,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Пересылка сообщения администратору
     if ADMIN_ID and chat_id != ADMIN_ID:
         try:
+            safe_text = escape_markdown(message_text)
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text=f"💬 **Сообщение от пользователя:**\n\n"
                      f"👤 {user.first_name} (@{user.username or 'без username'})\n"
                      f"🆔 ID: `{user.id}`\n"
-                     f"📝 Текст: {message_text}\n"
+                     f"📝 Текст: {safe_text}\n"
                      f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}",
                 parse_mode='Markdown'
             )
@@ -525,10 +563,12 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Уведомление администратора об ошибке (только для критических)
     if ADMIN_ID and not isinstance(error, (Conflict, NetworkError, TimedOut)):
         try:
+            error_text = str(error)[:100]  # Ограничиваем длину ошибки
+            safe_error = escape_markdown(error_text)
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text=f"❌ **Ошибка в боте:**\n\n"
-                     f"🔍 Детали: {error}\n"
+                     f"🔍 Детали: {safe_error}\n"
                      f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}",
                 parse_mode='Markdown'
             )
@@ -582,7 +622,7 @@ def main():
             application.add_error_handler(error_handler)
             
             # Запуск бота с улучшенными параметрами
-            logger.info(f"Запуск стабильного бота (попытка {retry_count + 1}/{max_retries})...")
+            logger.info(f"Запуск финального бота (попытка {retry_count + 1}/{max_retries})...")
             application.run_polling(
                 allowed_updates=Update.ALL_TYPES, 
                 drop_pending_updates=True,

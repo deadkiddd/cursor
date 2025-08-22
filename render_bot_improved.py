@@ -38,25 +38,16 @@ user_states = {}
 
 # Комиссии для разных услуг
 COMMISSION_RATES = {
-    'netflix': 0.10,
-    'steam': 0.08,
-    'discord': 0.12,
-    'spotify': 0.15,
-    'youtube': 0.13,
-    'twitch': 0.11,
-    'apple_music': 0.14,
-    'google_play': 0.09,
-    'transfer_eu': 0.07,
-    'transfer_us': 0.10,
-    'crypto_btc': 0.03,
-    'crypto_eth': 0.04,
-    'crypto_usdt': 0.02
+   'discord': 0.08,
+    'gpt': 0.08,
+    'transfer_eu': 0.08,
+    'другое': 0.08
 }
 
 # Минимальные суммы
 MIN_AMOUNTS = {
-    'cards': 10,
-    'transfers': 10,
+    'cards': 1,
+    'transfers': 1,
     'crypto': 5
 }
 
@@ -159,15 +150,24 @@ def clear_user_state(user_id):
         del user_states[user_id]
 
 def calculate_commission(service_type, amount):
-    """Рассчитать комиссию и итоговую сумму"""
+    """Рассчитать комиссию и итоговую сумму
+    - Для сумм < $30 действует фиксированная комиссия $3
+    - Для сумм >= $30 используется процент по тарифу
+    """
     commission_rate = COMMISSION_RATES.get(service_type, 0.10)
-    commission = amount * commission_rate
+    if amount < 30:
+        commission = 3.0
+        is_fixed = True
+    else:
+        commission = amount * commission_rate
+        is_fixed = False
     total_amount = amount + commission
     return {
         'original_amount': amount,
         'commission_rate': commission_rate,
         'commission': commission,
-        'total_amount': total_amount
+        'total_amount': total_amount,
+        'is_fixed': is_fixed
     }
 
 def get_payment_address(service_type):
@@ -249,15 +249,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🤖 **Добро пожаловать в Финансовый Бот!**
 
 Мы предоставляем следующие услуги:
-• 💳 **Оплата зарубежными картами** (Netflix, Steam, Discord, Spotify и др.)
-• 💸 **Переводы на европейские и американские банковские карты**
-• ₿ **Поддержка криптовалют**: BTC, ETH, USDT (TRC20/ERC20)
+• 💳 **Оплата зарубежными картами** (GPT, Steam, Discord, X(Twitter) и др.)
+• 💸 **Переводы на европейские банковские карты**
+• ₿ **Поддержка криптовалют**: BTC, ETH, USDT,S SOL и др. 
 
 📋 **Условия:**
-• Минимальная сумма: $10
-• Комиссия: 5-15% в зависимости от услуги
+• Комиссия: 8% 
 • Время обработки: 10-30 минут
-• Круглосуточная поддержка
+• Поддержка с 11:00-22:00 МСК
 
 Выберите нужную услугу:
 """
@@ -308,7 +307,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 **Основные команды:**
 /start - Главное меню
 /menu - Каталог услуг
-/help - Эта справка
+/help - Это справка
 /address - Реквизиты для оплаты
 /price - Прайс-лист
 
@@ -320,13 +319,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **Поддержка:**
 • @swiwell - Основной оператор
-• @Deadkid - Техническая поддержка
+• @realdealkid - Техническая поддержка
 
-**Время работы:** Круглосуточно
+**Время работы:** с 11:00-22:00 МСК
 
-**Ограничения:**
-• Максимум 60 сообщений в минуту
-• Максимальная длина сообщения: 4096 символов
+
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -378,29 +375,28 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💰 **Прайс-лист услуг:**
 
 **💳 Оплата зарубежными картами:**
-• Netflix: $15-50 (комиссия 10%)
+• Netflix: $15-50 (комиссия 8%)
 • Steam: $10-100 (комиссия 8%)
-• Discord Nitro: $10-20 (комиссия 12%)
-• Spotify: $10-15 (комиссия 15%)
-• YouTube Premium: $12-18 (комиссия 13%)
-• Twitch Subscriptions: $5-25 (комиссия 11%)
+• Discord Nitro: $10-20 (комиссия 8%)
+• Spotify: $10-15 (комиссия 8%)
+• YouTube Premium: $12-18 (комиссия 8%)
+• Twitch Subscriptions: $5-25 (комиссия 8%)
 
 **💸 Переводы на карты:**
-• Европейские карты: 5-8% комиссия
-• Американские карты: 8-12% комиссия
-• Минимальная сумма: $10
+• Европейские карты: 8% комиссия
+• Американские карты: 8% комиссия
+• Минимальная сумма: $100
 
 **₿ Криптовалюты:**
-• BTC: 3% комиссия
-• ETH: 4% комиссия
-• USDT: 2% комиссия
+• BTC: 8% комиссия
+• ETH: 8% комиссия
+• USDT: 8% комиссия
 
 **⏱️ Время обработки:** 10-30 минут
 
 **💳 Способы оплаты:**
 • Банковские карты
 • Криптовалюты
-• Электронные кошельки
 """
     await update.message.reply_text(price_text, parse_mode='Markdown')
 
@@ -485,7 +481,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **🌍 Географические зоны:**
 • Европейские карты (СЕПА)
-• Американские карты
 • Другие страны
 
 **💡 Как это работает:**
@@ -553,7 +548,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Для оформления заказа или получения консультации:
 
 **Основной оператор:** @swiwell
-**Техническая поддержка:** @Deadkid
+**Техническая поддержка:** @realdealkid
 
 ⚠️ **Важно:** При обращении указывайте:
 • Ваш Telegram ID: `{user.id}`
@@ -856,6 +851,9 @@ async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Рассчитываем комиссию
         calculation = calculate_commission(selected_service, amount)
         
+        commission_line = (f"Комиссия (фиксированная $3.00): ${calculation['commission']:.2f}" if calculation['is_fixed']
+                           else f"Комиссия ({calculation['commission_rate']*100}%): ${calculation['commission']:.2f}")
+        
         # Обновляем состояние
         current_state['amount'] = amount
         current_state['calculation'] = calculation
@@ -871,26 +869,10 @@ async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE
 **📋 Детали заказа:**
 • Сервис: {service_display_name}
 • Сумма: ${amount:.2f}
-• Комиссия ({calculation['commission_rate']*100}%): ${calculation['commission']:.2f}
+• {commission_line}
 • **Итого к оплате: ${calculation['total_amount']:.2f}**
 
 **💳 Реквизиты для оплаты:**
-
-**₿ Bitcoin (BTC):**
-`{payment_addresses['BTC']}`
-
-**Ξ Ethereum (ETH):**
-`{payment_addresses['ETH']}`
-
-**💎 USDT (TRC20):**
-`{payment_addresses['USDT_TRC20']}`
-
-⚠️ **Важно:** 
-• Указывайте комментарий к платежу: `{user.id}`
-• После оплаты свяжитесь с оператором @swiwell
-• Время обработки: 10-30 минут
-
-🔒 **Гарантии:** 100% успешность операций
 """
         
         keyboard = [
@@ -936,6 +918,9 @@ async def handle_transfer_amount_input(update: Update, context: ContextTypes.DEF
         # Рассчитываем комиссию
         calculation = calculate_commission(f'transfer_{selected_transfer_type}', amount)
         
+        commission_line = (f"Комиссия (фиксированная $3.00): ${calculation['commission']:.2f}" if calculation['is_fixed']
+                           else f"Комиссия ({calculation['commission_rate']*100}%): ${calculation['commission']:.2f}")
+        
         # Обновляем состояние
         current_state['amount'] = amount
         current_state['calculation'] = calculation
@@ -951,26 +936,10 @@ async def handle_transfer_amount_input(update: Update, context: ContextTypes.DEF
 **📋 Детали заказа:**
 • Тип: {transfer_display_name}
 • Сумма: ${amount:.2f}
-• Комиссия ({calculation['commission_rate']*100}%): ${calculation['commission']:.2f}
+• {commission_line}
 • **Итого к оплате: ${calculation['total_amount']:.2f}**
 
 **💳 Реквизиты для оплаты:**
-
-**₿ Bitcoin (BTC):**
-`{payment_addresses['BTC']}`
-
-**Ξ Ethereum (ETH):**
-`{payment_addresses['ETH']}`
-
-**💎 USDT (TRC20):**
-`{payment_addresses['USDT_TRC20']}`
-
-⚠️ **Важно:** 
-• Указывайте комментарий к платежу: `{user.id}`
-• После оплаты свяжитесь с оператором @swiwell
-• Время обработки: 10-30 минут
-
-🔒 **Безопасность:** Шифрованная передача данных
 """
         
         keyboard = [
@@ -1016,6 +985,9 @@ async def handle_crypto_amount_input(update: Update, context: ContextTypes.DEFAU
         # Рассчитываем комиссию
         calculation = calculate_commission(f'crypto_{selected_crypto}', amount)
         
+        commission_line = (f"Комиссия (фиксированная $3.00): ${calculation['commission']:.2f}" if calculation['is_fixed']
+                           else f"Комиссия ({calculation['commission_rate']*100}%): ${calculation['commission']:.2f}")
+        
         # Обновляем состояние
         current_state['amount'] = amount
         current_state['calculation'] = calculation
@@ -1031,26 +1003,10 @@ async def handle_crypto_amount_input(update: Update, context: ContextTypes.DEFAU
 **📋 Детали заказа:**
 • Криптовалюта: {crypto_display_name}
 • Сумма: ${amount:.2f}
-• Комиссия ({calculation['commission_rate']*100}%): ${calculation['commission']:.2f}
+• {commission_line}
 • **Итого к оплате: ${calculation['total_amount']:.2f}**
 
 **💳 Реквизиты для оплаты:**
-
-**₿ Bitcoin (BTC):**
-`{payment_addresses['BTC']}`
-
-**Ξ Ethereum (ETH):**
-`{payment_addresses['ETH']}`
-
-**💎 USDT (TRC20):**
-`{payment_addresses['USDT_TRC20']}`
-
-⚠️ **Важно:** 
-• Указывайте комментарий к платежу: `{user.id}`
-• После оплаты свяжитесь с оператором @swiwell
-• Время обработки: 10-30 минут
-
-🔒 **Особенности:** Мгновенные транзакции
 """
         
         keyboard = [

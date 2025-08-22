@@ -25,7 +25,7 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
 ADMIN_ID_2 = int(os.getenv('ADMIN_ID_2', 0))  # Второй администратор
 OPERATOR_USERNAME = "@swiwell"
-OPERATOR_USERNAME_2 = "@Deadkid"
+OPERATOR_USERNAME_2 = "@realdealkid"
 PORT = int(os.getenv('PORT', 10000))
 
 # Настройки безопасности
@@ -356,7 +356,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **Поддержка:**
 • @swiwell - Основной оператор
-• @Deadkid - Техническая поддержка
+• @realdealkid - Техническая поддержка
 
 **Время работы:** Круглосуточно
 
@@ -572,7 +572,7 @@ USDT (TRC20): `{payment_addresses['USDT_TRC20']}`
 Для оформления заказа или получения консультации:
 
 **Основной оператор:** @swiwell
-**Техническая поддержка:** @Deadkid
+**Техническая поддержка:** @realdealkid
 
 ⚠️ **Важно:** При обращении указывайте:
 • Ваш Telegram ID: `{user.id}`
@@ -1159,3 +1159,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

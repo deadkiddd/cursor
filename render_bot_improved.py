@@ -38,16 +38,25 @@ user_states = {}
 
 # Комиссии для разных услуг
 COMMISSION_RATES = {
-   'discord': 0.08,
-    'gpt': 0.08,
+    'netflix': 0.08,
+    'steam': 0.08,
+    'discord': 0.08,
+    'spotify': 0.08,
+    'youtube': 0.08,
+    'twitch': 0.08,
+    'apple_music': 0.08,
+    'google_play': 0.08,
     'transfer_eu': 0.08,
-    'другое': 0.08
+    'transfer_us': 0.08,
+    'crypto_btc': 0.08,
+    'crypto_eth': 0.08,
+    'crypto_usdt': 0.08
 }
 
 # Минимальные суммы
 MIN_AMOUNTS = {
-    'cards': 1,
-    'transfers': 1,
+    'cards': 10,
+    'transfers': 10,
     'crypto': 5
 }
 
@@ -213,17 +222,6 @@ async def send_admin_notification(context, title, user, additional_info=""):
     except Exception as e:
         logger.error(f"Ошибка отправки уведомления администратору: {e}")
 
-def build_main_menu_keyboard():
-    """Собрать главное меню в виде сетки кнопок"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔗 Chains", callback_data="open_crypto"), InlineKeyboardButton("💳 Wallets", callback_data="show_address"), InlineKeyboardButton("⚙️ Global Settings", callback_data="show_help")],
-        [InlineKeyboardButton("📡 Signals", callback_data="show_prices"), InlineKeyboardButton("👫 Copytrade", callback_data="contact_operator")],
-        [InlineKeyboardButton("🤝 Presales", callback_data="open_payment_cards"), InlineKeyboardButton("🎯 Auto Snipe", callback_data="open_transfers")],
-        [InlineKeyboardButton("🕓 Active Orders", callback_data="show_status"), InlineKeyboardButton("📈 Positions", callback_data="show_prices")],
-        [InlineKeyboardButton("⭐ Premium", callback_data="open_payment_cards"), InlineKeyboardButton("💰 Referral", callback_data="contact_operator"), InlineKeyboardButton("🔁 Bridge", callback_data="open_transfers")],
-        [InlineKeyboardButton("⚡ BUY & SELL NOW!", callback_data="open_payment_cards")]
-    ])
-
 # Обработчики бота
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /start"""
@@ -249,14 +247,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🤖 **Добро пожаловать в Финансовый Бот!**
 
 Мы предоставляем следующие услуги:
-• 💳 **Оплата зарубежными картами** (GPT, Steam, Discord, X(Twitter) и др.)
-• 💸 **Переводы на европейские банковские карты**
-• ₿ **Поддержка криптовалют**: BTC, ETH, USDT,S SOL и др. 
+• 💳 **Оплата зарубежными картами** (Netflix, Steam, Discord, Spotify и др.)
+• 💸 **Переводы на европейские и американские банковские карты**
+• ₿ **Поддержка криптовалют**: BTC, ETH, USDT (TRC20/ERC20)
 
 📋 **Условия:**
-• Комиссия: 8% 
+• Минимальная сумма: $10
+• Комиссия: 5-15% в зависимости от услуги
 • Время обработки: 10-30 минут
-• Поддержка с 11:00-22:00 МСК
+• Круглосуточная поддержка
 
 Выберите нужную услугу:
 """
@@ -284,10 +283,16 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Слишком много сообщений. Подождите немного.")
         return
 
-    await update.message.reply_text(
-        "Выберите раздел:",
-        reply_markup=build_main_menu_keyboard()
-    )
+    keyboard = [
+        [InlineKeyboardButton("💳 Оплата картами", callback_data="payment_cards")],
+        [InlineKeyboardButton("💸 Переводы", callback_data="transfers")],
+        [InlineKeyboardButton("₿ Оплата криптовалютой", callback_data="crypto")],
+        [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
+        [InlineKeyboardButton("💰 Прайс-лист", callback_data="price_list")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text("Выберите категорию услуг:", reply_markup=reply_markup)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /help"""
@@ -307,7 +312,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 **Основные команды:**
 /start - Главное меню
 /menu - Каталог услуг
-/help - Это справка
+/help - Эта справка
 /address - Реквизиты для оплаты
 /price - Прайс-лист
 
@@ -319,11 +324,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **Поддержка:**
 • @swiwell - Основной оператор
-• @realdealkid - Техническая поддержка
+• @Deadkid - Техническая поддержка
 
-**Время работы:** с 11:00-22:00 МСК
+**Время работы:** Круглосуточно
 
-
+**Ограничения:**
+• Максимум 60 сообщений в минуту
+• Максимальная длина сообщения: 4096 символов
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -375,28 +382,29 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💰 **Прайс-лист услуг:**
 
 **💳 Оплата зарубежными картами:**
-• Netflix: $15-50 (комиссия 8%)
+• Netflix: $15-50 (комиссия 10%)
 • Steam: $10-100 (комиссия 8%)
-• Discord Nitro: $10-20 (комиссия 8%)
-• Spotify: $10-15 (комиссия 8%)
-• YouTube Premium: $12-18 (комиссия 8%)
-• Twitch Subscriptions: $5-25 (комиссия 8%)
+• Discord Nitro: $10-20 (комиссия 12%)
+• Spotify: $10-15 (комиссия 15%)
+• YouTube Premium: $12-18 (комиссия 13%)
+• Twitch Subscriptions: $5-25 (комиссия 11%)
 
 **💸 Переводы на карты:**
-• Европейские карты: 8% комиссия
-• Американские карты: 8% комиссия
-• Минимальная сумма: $100
+• Европейские карты: 5-8% комиссия
+• Американские карты: 8-12% комиссия
+• Минимальная сумма: $10
 
 **₿ Криптовалюты:**
-• BTC: 8% комиссия
-• ETH: 8% комиссия
-• USDT: 8% комиссия
+• BTC: 3% комиссия
+• ETH: 4% комиссия
+• USDT: 2% комиссия
 
 **⏱️ Время обработки:** 10-30 минут
 
 **💳 Способы оплаты:**
 • Банковские карты
 • Криптовалюты
+• Электронные кошельки
 """
     await update.message.reply_text(price_text, parse_mode='Markdown')
 
@@ -425,41 +433,31 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
         
         text = """
-💳 **Оплата зарубежными картами:**
+💳 **Оплата зарубежными покупками:**
 
 Выберите сервис для оплаты:
 
-**🎬 Стриминговые сервисы:**
+• X (бывший Twitter) Premium / GPT
 • Netflix Premium
+• Steam Gift Cards
 • Spotify Premium
 • YouTube Premium
-• Twitch Subscriptions
-
-**🎮 Игровые платформы:**
-• Steam Gift Cards
 • Discord Nitro
+• Apple Music / Google Play
 
-**📱 Мобильные сервисы:**
-• Apple Music
-• Google Play
-
-**💡 Как это работает:**
-1. Выберите сервис
-2. Укажите сумму
-3. Получите реквизиты для оплаты
-4. После оплаты получите карту
-
-🔒 **Гарантии:**
-• 100% успешность операций
-• Возврат средств при проблемах
-• Поддержка 24/7
+💡 Как это работает:
+1) Выберите сервис
+2) Укажите сумму
+3) Получите крипто‑реквизиты
+4) После поступления средств выдадим карту/оплатим товар
 """
         keyboard = [
+            [InlineKeyboardButton("🧠 GPT / X Premium", callback_data="service_gptx")],
             [InlineKeyboardButton("🎬 Netflix", callback_data="service_netflix")],
             [InlineKeyboardButton("🎮 Steam", callback_data="service_steam")],
-            [InlineKeyboardButton("🎵 Discord Nitro", callback_data="service_discord")],
             [InlineKeyboardButton("🎵 Spotify", callback_data="service_spotify")],
-            [InlineKeyboardButton("📺 YouTube Premium", callback_data="service_youtube")],
+            [InlineKeyboardButton("📺 YouTube", callback_data="service_youtube")],
+            [InlineKeyboardButton("🕹 Discord Nitro", callback_data="service_discord")],
             [InlineKeyboardButton("📱 Apple Music", callback_data="service_apple_music")],
             [InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu")]
         ]
@@ -481,6 +479,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **🌍 Географические зоны:**
 • Европейские карты (СЕПА)
+• Американские карты
 • Другие страны
 
 **💡 Как это работает:**
@@ -504,39 +503,32 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
         
     elif query.data == "crypto":
-        # Устанавливаем состояние для криптовалют
+        # Приём оплаты в криптовалюте (без переводов)
         set_user_state(user.id, {
-            'state': 'selecting_crypto_type',
+            'state': 'crypto_info',
             'service_type': 'crypto',
-            'step': 'crypto_type_selection'
+            'step': 'show_addresses'
         })
         
-        text = """
-₿ **Криптовалютные операции:**
+        payment_addresses = get_payment_address('crypto')
+        text = f"""
+₿ **Оплата криптовалютой:**
 
-Выберите тип операции:
+Мы принимаем оплату в:
+• BTC
+• ETH
+• USDT (TRC20)
 
-**💱 Покупка/Продажа:**
-• Bitcoin (BTC)
-• Ethereum (ETH)
-• USDT (TRC20/ERC20)
+**Реквизиты:**
+BTC: `{payment_addresses['BTC']}`
+ETH: `{payment_addresses['ETH']}`
+USDT (TRC20): `{payment_addresses['USDT_TRC20']}`
 
-**💡 Как это работает:**
-1. Выберите криптовалюту
-2. Укажите сумму
-3. Получите реквизиты для оплаты
-4. После оплаты получите криптовалюту
-
-🔒 **Особенности:**
-• Мгновенные транзакции
-• Низкие комиссии
-• Анонимность
+После оплаты укажите хеш транзакции и услугу (например: GPT/X Premium).
+Комиссия: 8% (для сумм < $30 — фикс $3).
 """
         keyboard = [
-            [InlineKeyboardButton("₿ Bitcoin (BTC)", callback_data="crypto_btc")],
-            [InlineKeyboardButton("Ξ Ethereum (ETH)", callback_data="crypto_eth")],
-            [InlineKeyboardButton("💎 USDT", callback_data="crypto_usdt")],
-            [InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu")]
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -548,7 +540,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Для оформления заказа или получения консультации:
 
 **Основной оператор:** @swiwell
-**Техническая поддержка:** @realdealkid
+**Техническая поддержка:** @Deadkid
 
 ⚠️ **Важно:** При обращении указывайте:
 • Ваш Telegram ID: `{user.id}`
@@ -616,9 +608,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif query.data == "back_to_menu":
         # Редактируем текущее сообщение с меню
+        keyboard = [
+            [InlineKeyboardButton("💳 Оплата картами", callback_data="payment_cards")],
+            [InlineKeyboardButton("💸 Переводы", callback_data="transfers")],
+            [InlineKeyboardButton("₿ Оплата криптовалютой", callback_data="crypto")],
+            [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
+            [InlineKeyboardButton("💰 Прайс-лист", callback_data="price_list")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            text="Выберите раздел:",
-            reply_markup=build_main_menu_keyboard()
+            text="Выберите категорию услуг:",
+            reply_markup=reply_markup
         )
         
     # Обработчики выбора сервисов для карт
@@ -631,6 +631,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_user_state(user.id, current_state)
         
         service_names = {
+            'gptx': 'GPT / X Premium',
             'netflix': 'Netflix Premium',
             'steam': 'Steam Gift Cards',
             'discord': 'Discord Nitro',
@@ -640,13 +641,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         
         service_display_name = service_names.get(service_name, service_name.title())
-        commission_rate = COMMISSION_RATES.get(service_name, 0.10)
+        commission_rate = 0.08
         
         text = f"""
 💳 **{service_display_name}**
 
 Выбранный сервис: **{service_display_name}**
-Комиссия: **{commission_rate * 100}%**
+Комиссия: **8%** (для сумм < $30 — фикс $3)
 
 💰 **Введите сумму в долларах:**
 (Минимальная сумма: ${MIN_AMOUNTS['cards']})
@@ -716,7 +717,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         
         crypto_display_name = crypto_names.get(crypto_type, crypto_type.upper())
-        commission_rate = COMMISSION_RATES.get(f'crypto_{crypto_type}', 0.03)
+        commission_rate = COMMISSION_RATES.get(f'crypto_{crypto_type}', 0.08)
         
         text = f"""
 ₿ **{crypto_display_name}**
@@ -737,35 +738,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
-
-    # Алиасы для нового главного меню
-    elif query.data == "open_payment_cards":
-        # перенаправляем к существующему разделу карт
-        await button_callback(Update(update.update_id, callback_query=update.callback_query), context)
-        query.data = "payment_cards"
-        return
-    elif query.data == "open_transfers":
-        query.data = "transfers"
-        await button_callback(Update(update.update_id, callback_query=update.callback_query), context)
-        return
-    elif query.data == "open_crypto":
-        query.data = "crypto"
-        await button_callback(Update(update.update_id, callback_query=update.callback_query), context)
-        return
-    elif query.data == "show_address":
-        # Показать реквизиты
-        temp_update = Update(update.update_id)
-        temp_update.message = query.message
-        await address_command(temp_update, context)
-        return
-    elif query.data == "show_prices":
-        temp_update = Update(update.update_id)
-        temp_update.message = query.message
-        await price_command(temp_update, context)
-        return
-    elif query.data == "show_status":
-        await query.edit_message_text("✅ Бот работает нормально. Время работы: " + get_uptime(), reply_markup=build_main_menu_keyboard())
-        return
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений"""

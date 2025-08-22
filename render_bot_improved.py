@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 # Переменные окружения
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
+ADMIN_ID_2 = int(os.getenv('ADMIN_ID_2', 0))  # Второй администратор
+OPERATOR_USERNAME = "@swiwell"
+OPERATOR_USERNAME_2 = "@Deadkid"
 PORT = int(os.getenv('PORT', 10000))
 
 # Настройки безопасности
@@ -222,6 +225,35 @@ async def send_admin_notification(context, title, user, additional_info=""):
     except Exception as e:
         logger.error(f"Ошибка отправки уведомления администратору: {e}")
 
+async def send_admin_notification_to_all(context, title, user, additional_info=""):
+    """Отправка уведомления обоим администраторам"""
+    if not ADMIN_ID and not ADMIN_ID_2:
+        return
+    
+    try:
+        message = f"{title}\n\n"
+        message += f"👤 Пользователь: {user.first_name} (@{user.username or 'без username'})\n"
+        message += f"🆔 ID: `{user.id}`\n"
+        message += f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+        
+        if additional_info:
+            message += f"\n\n{additional_info}"
+        
+        if ADMIN_ID:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=message,
+                parse_mode='Markdown'
+            )
+        if ADMIN_ID_2:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID_2,
+                text=message,
+                parse_mode='Markdown'
+            )
+    except Exception as e:
+        logger.error(f"Ошибка отправки уведомления обоим администраторам: {e}")
+
 # Обработчики бота
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /start"""
@@ -237,7 +269,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Уведомление администратора о новом пользователе
-    await send_admin_notification(
+    await send_admin_notification_to_all(
         context, 
         "🆕 **Новый пользователь зарегистрирован!**", 
         user
@@ -560,7 +592,7 @@ USDT (TRC20): `{payment_addresses['USDT_TRC20']}`
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
         
         # Уведомление администратора о запросе связи
-        await send_admin_notification(
+        await send_admin_notification_to_all(
             context,
             "📞 **Запрос на связь!**",
             user
@@ -856,7 +888,7 @@ async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
         
         # Уведомляем администратора
-        await send_admin_notification(
+        await send_admin_notification_to_all(
             context,
             f"💳 **Новый заказ карты!**",
             user,
@@ -923,7 +955,7 @@ async def handle_transfer_amount_input(update: Update, context: ContextTypes.DEF
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
         
         # Уведомляем администратора
-        await send_admin_notification(
+        await send_admin_notification_to_all(
             context,
             f"💸 **Новый заказ перевода!**",
             user,
@@ -990,7 +1022,7 @@ async def handle_crypto_amount_input(update: Update, context: ContextTypes.DEFAU
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
         
         # Уведомляем администратора
-        await send_admin_notification(
+        await send_admin_notification_to_all(
             context,
             f"₿ **Новый заказ криптовалюты!**",
             user,
@@ -1020,17 +1052,24 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка при обработке обновления: {error}")
     
     # Уведомление администратора об ошибке (только для критических)
-    if ADMIN_ID and not isinstance(error, (Conflict, NetworkError, TimedOut)):
+    if (ADMIN_ID or ADMIN_ID_2) and not isinstance(error, (Conflict, NetworkError, TimedOut)):
         try:
             error_text = str(error)[:100]  # Ограничиваем длину ошибки
             safe_error = escape_markdown(error_text)
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"❌ **Ошибка в боте:**\n\n"
-                     f"🔍 Детали: {safe_error}\n"
-                     f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}",
-                parse_mode='Markdown'
-            )
+            error_message = f"❌ **Ошибка в боте:**\n\n🔍 Детали: {safe_error}\n📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+            
+            if ADMIN_ID:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=error_message,
+                    parse_mode='Markdown'
+                )
+            if ADMIN_ID_2:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID_2,
+                    text=error_message,
+                    parse_mode='Markdown'
+                )
         except Exception as e:
             logger.error(f"Ошибка уведомления администратора об ошибке: {e}")
 
@@ -1053,8 +1092,8 @@ def main():
         logger.error("TELEGRAM_BOT_TOKEN не установлен!")
         return
     
-    if not ADMIN_ID:
-        logger.warning("ADMIN_ID не установлен! Уведомления администратора отключены.")
+    if not ADMIN_ID and not ADMIN_ID_2:
+        logger.warning("ADMIN_ID и ADMIN_ID_2 не установлены! Уведомления администратора отключены.")
     
     # Запуск Flask сервера в отдельном потоке
     flask_thread = threading.Thread(target=start_flask, daemon=True)

@@ -163,7 +163,7 @@ def calculate_commission(service_type, amount):
     - Для сумм < $30 действует фиксированная комиссия $3
     - Для сумм >= $30 используется процент по тарифу
     """
-    commission_rate = COMMISSION_RATES.get(service_type, 0.10)
+    commission_rate = COMMISSION_RATES.get(service_type, 0.08)
     if amount < 30:
         commission = 3.0
         is_fixed = True

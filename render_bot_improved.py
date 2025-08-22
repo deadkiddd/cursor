@@ -539,9 +539,13 @@ def main():
         # Добавление обработчика ошибок
         application.add_error_handler(error_handler)
         
-        # Запуск бота
+        # Запуск бота с drop_pending_updates для избежания конфликтов
         logger.info("Запуск исправленного бота...")
-        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES, 
+            drop_pending_updates=True,
+            close_loop=False
+        )
         
     except Exception as e:
         logger.error(f"Критическая ошибка при запуске бота: {e}")

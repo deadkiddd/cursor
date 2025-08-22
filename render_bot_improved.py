@@ -487,16 +487,60 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     elif query.data == "price_list":
-        # Создаем временное сообщение для price_command
-        temp_update = Update(0)
-        temp_update.message = query.message
-        await price_command(temp_update, context)
+        # Редактируем текущее сообщение с прайс-листом
+        price_text = """
+💰 **Прайс-лист услуг:**
+
+**💳 Оплата зарубежными картами:**
+• Netflix: $15-50 (комиссия 10%)
+• Steam: $10-100 (комиссия 8%)
+• Discord Nitro: $10-20 (комиссия 12%)
+• Spotify: $10-15 (комиссия 15%)
+• YouTube Premium: $12-18 (комиссия 13%)
+• Twitch Subscriptions: $5-25 (комиссия 11%)
+
+**💸 Переводы на карты:**
+• Европейские карты: 5-8% комиссия
+• Американские карты: 8-12% комиссия
+• Минимальная сумма: $10
+
+**₿ Криптовалюты:**
+• BTC: 3% комиссия
+• ETH: 4% комиссия
+• USDT: 2% комиссия
+
+**⏱️ Время обработки:** 10-30 минут
+
+**💳 Способы оплаты:**
+• Банковские карты
+• Криптовалюты
+• Электронные кошельки
+"""
+        keyboard = [
+            [InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            text=price_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
         
     elif query.data == "back_to_menu":
-        # Создаем временное сообщение для menu_command
-        temp_update = Update(0)
-        temp_update.message = query.message
-        await menu_command(temp_update, context)
+        # Редактируем текущее сообщение с меню
+        menu_text = "Выберите категорию услуг:"
+        keyboard = [
+            [InlineKeyboardButton("💳 Оплата картами", callback_data="payment_cards")],
+            [InlineKeyboardButton("💸 Переводы", callback_data="transfers")],
+            [InlineKeyboardButton("₿ Криптовалюты", callback_data="crypto")],
+            [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
+            [InlineKeyboardButton("💰 Прайс-лист", callback_data="price_list")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            text=menu_text,
+            reply_markup=reply_markup
+        )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений"""

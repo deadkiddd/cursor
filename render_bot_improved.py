@@ -3,12 +3,15 @@ import logging
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.error import Conflict, NetworkError, TimedOut
 from flask import Flask, request, jsonify
 import threading
 import time
 from datetime import datetime, timedelta
 import json
 import re
+import signal
+import sys
 
 # Настройка логирования
 logging.basicConfig(
@@ -29,6 +32,9 @@ RATE_LIMIT_WINDOW = 60  # секунд
 
 # Кэш для rate limiting
 user_message_times = {}
+
+# Флаг для graceful shutdown
+shutdown_flag = False
 
 # Flask приложение для проверки состояния
 app = Flask(__name__)
@@ -52,6 +58,13 @@ def get_stats():
         "active_users": len(user_message_times),
         "timestamp": datetime.now().isoformat()
     })
+
+@app.route('/restart', methods=['POST'])
+def restart_bot():
+    """Эндпоинт для перезапуска бота"""
+    global shutdown_flag
+    shutdown_flag = True
+    return jsonify({"status": "restarting"})
 
 def start_flask():
     try:
@@ -495,23 +508,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка ошибок"""
-    logger.error(f"Ошибка при обработке обновления: {context.error}")
+    error = context.error
     
-    # Уведомление администратора об ошибке
-    if ADMIN_ID:
+    # Обработка специфических ошибок
+    if isinstance(error, Conflict):
+        logger.warning("Обнаружен конфликт экземпляров бота. Перезапуск...")
+        # Не отправляем уведомление администратору для конфликтов
+        return
+    elif isinstance(error, (NetworkError, TimedOut)):
+        logger.warning(f"Сетевая ошибка: {error}")
+        # Не отправляем уведомление для временных сетевых ошибок
+        return
+    else:
+        logger.error(f"Ошибка при обработке обновления: {error}")
+    
+    # Уведомление администратора об ошибке (только для критических)
+    if ADMIN_ID and not isinstance(error, (Conflict, NetworkError, TimedOut)):
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text=f"❌ **Ошибка в боте:**\n\n"
-                     f"🔍 Детали: {context.error}\n"
+                     f"🔍 Детали: {error}\n"
                      f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}",
                 parse_mode='Markdown'
             )
         except Exception as e:
             logger.error(f"Ошибка уведомления администратора об ошибке: {e}")
 
+def signal_handler(signum, frame):
+    """Обработчик сигналов для graceful shutdown"""
+    global shutdown_flag
+    logger.info("Получен сигнал завершения. Завершение работы...")
+    shutdown_flag = True
+    sys.exit(0)
+
 def main():
     """Основная функция"""
+    global shutdown_flag
+    
+    # Регистрация обработчиков сигналов
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     if not TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN не установлен!")
         return
@@ -523,35 +561,60 @@ def main():
     flask_thread = threading.Thread(target=start_flask, daemon=True)
     flask_thread.start()
     
-    try:
-        # Создание приложения с обработкой ошибок
-        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        
-        # Добавление обработчиков
-        application.add_handler(CommandHandler("start", start_command))
-        application.add_handler(CommandHandler("menu", menu_command))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("address", address_command))
-        application.add_handler(CommandHandler("price", price_command))
-        application.add_handler(CallbackQueryHandler(button_callback))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
-        # Добавление обработчика ошибок
-        application.add_error_handler(error_handler)
-        
-        # Запуск бота с drop_pending_updates для избежания конфликтов
-        logger.info("Запуск исправленного бота...")
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES, 
-            drop_pending_updates=True,
-            close_loop=False
-        )
-        
-    except Exception as e:
-        logger.error(f"Критическая ошибка при запуске бота: {e}")
-        # Попытка перезапуска через 30 секунд
-        time.sleep(30)
-        main()
+    max_retries = 5
+    retry_count = 0
+    
+    while retry_count < max_retries and not shutdown_flag:
+        try:
+            # Создание приложения с обработкой ошибок
+            application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+            
+            # Добавление обработчиков
+            application.add_handler(CommandHandler("start", start_command))
+            application.add_handler(CommandHandler("menu", menu_command))
+            application.add_handler(CommandHandler("help", help_command))
+            application.add_handler(CommandHandler("address", address_command))
+            application.add_handler(CommandHandler("price", price_command))
+            application.add_handler(CallbackQueryHandler(button_callback))
+            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+            
+            # Добавление обработчика ошибок
+            application.add_error_handler(error_handler)
+            
+            # Запуск бота с улучшенными параметрами
+            logger.info(f"Запуск стабильного бота (попытка {retry_count + 1}/{max_retries})...")
+            application.run_polling(
+                allowed_updates=Update.ALL_TYPES, 
+                drop_pending_updates=True,
+                close_loop=False,
+                read_timeout=30,
+                write_timeout=30,
+                connect_timeout=30,
+                pool_timeout=30
+            )
+            
+        except Conflict as e:
+            logger.warning(f"Конфликт экземпляров бота: {e}")
+            retry_count += 1
+            if retry_count < max_retries:
+                logger.info(f"Ожидание 10 секунд перед повторной попыткой...")
+                time.sleep(10)
+            continue
+            
+        except Exception as e:
+            logger.error(f"Критическая ошибка при запуске бота: {e}")
+            retry_count += 1
+            if retry_count < max_retries:
+                logger.info(f"Ожидание 30 секунд перед повторной попыткой...")
+                time.sleep(30)
+            else:
+                logger.error("Превышено максимальное количество попыток. Завершение работы.")
+                break
+    
+    if shutdown_flag:
+        logger.info("Бот завершен по запросу.")
+    else:
+        logger.error("Бот завершен из-за критических ошибок.")
 
 if __name__ == '__main__':
     main()

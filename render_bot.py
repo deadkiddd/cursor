@@ -24,8 +24,8 @@ PORT = int(os.getenv('PORT', 10000))
 
 # Настройки безопасности
 MAX_MESSAGE_LENGTH = 4096
-RATE_LIMIT_MESSAGES = 5  # сообщений в минуту
-RATE_LIMIT_WINDOW = 60  # секунд
+RATE_LIMIT_MESSAGES = 60  # сообщений в минуту
+RATE_LIMIT_WINDOW = 40  # секунд
 
 # Кэш для rate limiting
 user_message_times = {}
@@ -555,3 +555,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

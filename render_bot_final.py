@@ -15,6 +15,16 @@ import sys
 import sqlite3
 from decimal import Decimal, ROUND_HALF_UP
 
+# Загружаем переменные окружения из .env файла
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ .env файл загружен успешно")
+except ImportError:
+    print("⚠️ python-dotenv не установлен, используем системные переменные")
+except Exception as e:
+    print(f"⚠️ Ошибка загрузки .env: {e}")
+
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -29,6 +39,28 @@ ADMIN_ID_2 = int(os.getenv('ADMIN_ID_2', 0))  # Второй администр�
 OPERATOR_USERNAME = "@swiwell"
 OPERATOR_USERNAME_2 = "@Deadkid"
 PORT = int(os.getenv('PORT', 10000))
+
+# Если токен не найден в .env, попробуем альтернативные способы
+if not TELEGRAM_BOT_TOKEN:
+    # Попробуем прочитать из файла напрямую
+    try:
+        with open('.env', 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.startswith('TELEGRAM_BOT_TOKEN='):
+                    TELEGRAM_BOT_TOKEN = line.split('=', 1)[1].strip()
+                    break
+        print("✅ Токен прочитан из файла .env напрямую")
+    except Exception as e:
+        print(f"❌ Не удалось прочитать токен из файла: {e}")
+        # Здесь можно временно указать токен напрямую (НЕ ДЛЯ ПРОДАКШЕНА!)
+        # TELEGRAM_BOT_TOKEN = "ваш_токен_здесь"
+
+# Проверка переменных окружения
+print("🔍 Проверка переменных окружения:")
+print(f"TELEGRAM_BOT_TOKEN: {'✅ Установлен' if TELEGRAM_BOT_TOKEN else '❌ НЕ УСТАНОВЛЕН'}")
+print(f"ADMIN_ID: {ADMIN_ID if ADMIN_ID else '❌ НЕ УСТАНОВЛЕН'}")
+print(f"ADMIN_ID_2: {ADMIN_ID_2 if ADMIN_ID_2 else '❌ НЕ УСТАНОВЛЕН'}")
+print(f"PORT: {PORT}")
 
 # Настройки безопасности
 MAX_MESSAGE_LENGTH = 4096
@@ -2205,16 +2237,16 @@ def main():
             
             # Запуск бота с улучшенными параметрами
             logger.info(f"Запуск финального бота (попытка {retry_count + 1}/{max_retries})...")
-            application.run_polling(
-                allowed_updates=Update.ALL_TYPES, 
-                drop_pending_updates=True,
-                close_loop=False,
-                read_timeout=30,
-                write_timeout=30,
-                connect_timeout=30,
-                pool_timeout=30,
-                timeout=30
-            )
+            try:
+                # Попробуем новый способ запуска
+                application.run_polling(
+                    allowed_updates=Update.ALL_TYPES, 
+                    drop_pending_updates=True
+                )
+            except TypeError as e:
+                # Если не поддерживаются новые параметры, используем старый способ
+                logger.info("Используем совместимый режим запуска...")
+                application.run_polling()
             
         except Conflict as e:
             logger.warning(f"Конфликт экземпляров бота: {e}")

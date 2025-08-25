@@ -689,28 +689,43 @@ async def handle_crypto_deposit_selection(query, data):
         currency = parts[2]  # btc, eth, usdt, sol
         amount = float(parts[3])  # сумма
         
-        commission = 0.03  # 3%
-        total_amount = amount + (amount * commission)
-        
-        # Получаем адрес кошелька
+        # Получаем адрес кошелька и рассчитываем количество криптовалюты
         global crypto_checker
         wallet_address = "Адрес не настроен"
+        crypto_amount = 0
         
         if crypto_checker and currency in crypto_checker.wallets:
             wallet_address = crypto_checker.wallets[currency]
+            # Рассчитываем количество криптовалюты по текущему курсу
+            crypto_amount = crypto_checker.calculate_crypto_amount(amount, currency)
+        
+        # Получаем текущий курс
+        currency_mapping = {
+            'btc': 'bitcoin',
+            'eth': 'ethereum',
+            'usdt': 'tether',
+            'sol': 'solana',
+            'usdc_sol': 'usd-coin',
+            'usdt_sol': 'tether'
+        }
+        
+        coin_id = currency_mapping.get(currency, currency)
+        current_price = crypto_checker.get_crypto_price(coin_id) if crypto_checker else 0
         
         crypto_text = f"""
 ₿ **Пополнение {currency.upper()}**
 
-💰 Сумма: {amount:.2f} USD
-💸 Комиссия: {amount * commission:.2f} USD
-💳 Итого к оплате: {total_amount:.2f} USD
+💰 Сумма к оплате: {amount:.2f} USD
+
+📊 **Калькулятор:**
+• Курс {currency.upper()}: ${current_price:.4f}
+• Количество для оплаты: {crypto_amount:.6f} {currency.upper()}
 
 📝 **Адрес для оплаты:**
 `{wallet_address}`
 
 ⚠️ **Важно:**
-• Отправьте точную сумму в {currency.upper()}
+• Отправьте точную сумму: {crypto_amount:.6f} {currency.upper()}
 • Укажите в комментарии: {user_id}
 • После оплаты баланс пополнится автоматически
 • При проблемах обращайтесь к @swiwell
@@ -831,7 +846,6 @@ async def show_card_deposit(query):
 💳 Пополнение банковской картой
 
 💰 Минимальная сумма: 10 USD
-💸 Комиссия: 5%
 
 📝 Для пополнения:
 1. Введите сумму пополнения
@@ -859,18 +873,19 @@ async def show_crypto_deposit(query):
 ₿ Пополнение криптовалютой
 
 💰 Минимальная сумма: 10 USD
-💸 Комиссия: 3%
 
 📝 Доступные валюты:
 • Bitcoin (BTC)
 • Ethereum (ETH)
 • USDT (ERC-20)
 • Solana (SOL)
+• USDC (Solana Network)
+• USDT (Solana Network)
 
 📝 Для пополнения:
 1. Введите сумму пополнения
 2. Выберите криптовалюту
-3. Получите адрес для оплаты
+3. Получите точное количество для оплаты
 4. После оплаты баланс пополнится автоматически
 
 Введите сумму пополнения (в USD):
@@ -1254,15 +1269,10 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
         
         if deposit_type == 'card':
             # Пополнение банковской картой
-            commission = 0.05  # 5%
-            total_amount = amount + (amount * commission)
-            
             deposit_text = f"""
 💳 **Пополнение банковской картой**
 
-💰 Сумма: {amount:.2f} USD
-💸 Комиссия: {amount * commission:.2f} USD
-💳 Итого к оплате: {total_amount:.2f} USD
+💰 Сумма к оплате: {amount:.2f} USD
 
 📝 **Реквизиты для оплаты:**
 Банк: Tinkoff Bank
@@ -1291,16 +1301,11 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
             
         elif deposit_type == 'crypto':
             # Пополнение криптовалютой
-            commission = 0.03  # 3%
-            total_amount = amount + (amount * commission)
-            
             # Показываем выбор криптовалюты
             crypto_text = f"""
 ₿ **Пополнение криптовалютой**
 
-💰 Сумма: {amount:.2f} USD
-💸 Комиссия: {amount * commission:.2f} USD
-💳 Итого к оплате: {total_amount:.2f} USD
+💰 Сумма к оплате: {amount:.2f} USD
 
 Выберите криптовалюту:
             """
@@ -1310,6 +1315,8 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
                 [InlineKeyboardButton("Ethereum (ETH)", callback_data=f"crypto_deposit_eth_{amount}")],
                 [InlineKeyboardButton("USDT (ERC-20)", callback_data=f"crypto_deposit_usdt_{amount}")],
                 [InlineKeyboardButton("Solana (SOL)", callback_data=f"crypto_deposit_sol_{amount}")],
+                [InlineKeyboardButton("USDC (Solana)", callback_data=f"crypto_deposit_usdc_sol_{amount}")],
+                [InlineKeyboardButton("USDT (Solana)", callback_data=f"crypto_deposit_usdt_sol_{amount}")],
                 [InlineKeyboardButton("🔙 Назад", callback_data="wallet_deposit")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)

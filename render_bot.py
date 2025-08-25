@@ -681,6 +681,7 @@ async def handle_deposit_action(query, data):
 
 async def handle_crypto_deposit_selection(query, data):
     """Обработка выбора криптовалюты для пополнения"""
+    global crypto_checker
     user_id = query.from_user.id
     
     # Парсим данные: crypto_deposit_btc_100 -> currency=btc, amount=100
@@ -697,15 +698,21 @@ async def handle_crypto_deposit_selection(query, data):
             amount = float(parts[3])  # сумма
         
         # Получаем адрес кошелька и рассчитываем количество криптовалюты
-        global crypto_checker
         wallet_address = "Адрес не настроен"
         crypto_amount = 0
         
+        # Отладочная информация
+        logger.info(f"crypto_checker: {crypto_checker}")
+        logger.info(f"currency: {currency}")
+        logger.info(f"amount: {amount}")
+        
         if crypto_checker and hasattr(crypto_checker, 'wallets') and currency in crypto_checker.wallets:
             wallet_address = crypto_checker.wallets[currency]
+            logger.info(f"wallet_address: {wallet_address}")
             # Рассчитываем количество криптовалюты по текущему курсу
             try:
                 crypto_amount = crypto_checker.calculate_crypto_amount(amount, currency)
+                logger.info(f"crypto_amount: {crypto_amount}")
             except Exception as e:
                 logger.error(f"Ошибка расчета количества {currency}: {e}")
                 # Fallback расчет
@@ -718,6 +725,38 @@ async def handle_crypto_deposit_selection(query, data):
                 }
                 rate = fallback_rates.get(currency, 1.0)
                 crypto_amount = amount / rate if rate > 0 else 0
+                logger.info(f"fallback crypto_amount: {crypto_amount}")
+        else:
+            logger.error(f"crypto_checker не инициализирован или валюта {currency} не найдена")
+            logger.error(f"crypto_checker: {crypto_checker}")
+            logger.error(f"hasattr wallets: {hasattr(crypto_checker, 'wallets') if crypto_checker else False}")
+            if crypto_checker and hasattr(crypto_checker, 'wallets'):
+                logger.error(f"available currencies: {list(crypto_checker.wallets.keys())}")
+            
+            # Fallback адреса кошельков
+            fallback_wallets = {
+                'eth': '0x12E450e53E1acD323B95e36636cB4927aC6C17eE',
+                'usdt': '0x12E450e53E1acD323B95e36636cB4927aC6C17eE',
+                'sol': '6s8bjsP5K3hvdj3bca4FxW8W6CqqSLH26aufVALTJbBq',
+                'usdc_sol': '6s8bjsP5K3hvdj3bca4FxW8W6CqqSLH26aufVALTJbBq',
+                'usdt_sol': '6s8bjsP5K3hvdj3bca4FxW8W6CqqSLH26aufVALTJbBq'
+            }
+            
+            if currency in fallback_wallets:
+                wallet_address = fallback_wallets[currency]
+                logger.info(f"Используем fallback адрес: {wallet_address}")
+                
+                # Fallback расчет криптовалюты
+                fallback_rates = {
+                    'eth': 3000.0,
+                    'usdt': 1.0,
+                    'sol': 100.0,
+                    'usdc_sol': 1.0,
+                    'usdt_sol': 1.0,
+                }
+                rate = fallback_rates.get(currency, 1.0)
+                crypto_amount = amount / rate if rate > 0 else 0
+                logger.info(f"fallback crypto_amount: {crypto_amount}")
         
         # Получаем текущий курс
         currency_mapping = {
@@ -745,6 +784,17 @@ async def handle_crypto_deposit_selection(query, data):
                     'usd-coin': 1.0,
                 }
                 current_price = fallback_rates.get(coin_id, 1.0)
+        else:
+            logger.error(f"crypto_checker не инициализирован для получения курса")
+            # Fallback курсы
+            fallback_rates = {
+                'solana': 100.0,
+                'ethereum': 3000.0,
+                'tether': 1.0,
+                'usd-coin': 1.0,
+            }
+            current_price = fallback_rates.get(coin_id, 1.0)
+            logger.info(f"Используем fallback курс для {coin_id}: {current_price}")
         
         crypto_text = f"""
 ₿ **Пополнение {currency.upper()}**

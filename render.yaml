@@ -16,5 +16,9 @@ services:
         value: 10000
       - key: PYTHON_VERSION
         value: 3.11.7
+      - key: ETHERSCAN_TOKEN
+        sync: false
+      - key: SOLSCAN_TOKEN
+        sync: false
     healthCheckPath: /health
     autoDeploy: true

@@ -1522,25 +1522,29 @@ def main():
     
     print(f"🌐 Flask сервер запущен на порту {PORT}")
     
-    # Запускаем фоновую проверку криптоплатежей
-    async def background_crypto_check():
-        while True:
-            try:
-                await check_crypto_payments()
-                await asyncio.sleep(60)  # Проверяем каждую минуту
-            except Exception as e:
-                logger.error(f"Ошибка фоновой проверки криптоплатежей: {e}")
-                await asyncio.sleep(60)
-    
-    # Запускаем фоновую задачу
-    asyncio.create_task(background_crypto_check())
-    
     print("🤖 Бот запущен и готов к работе!")
-    print("🔍 Фоновая проверка криптоплатежей активна")
     
-    # Запускаем бота
+    # Запускаем бота с фоновой проверкой криптоплатежей
+    async def run_bot_with_crypto_check():
+        # Запускаем фоновую проверку криптоплатежей
+        async def background_crypto_check():
+            while True:
+                try:
+                    await check_crypto_payments()
+                    await asyncio.sleep(60)  # Проверяем каждую минуту
+                except Exception as e:
+                    logger.error(f"Ошибка фоновой проверки криптоплатежей: {e}")
+                    await asyncio.sleep(60)
+        
+        # Запускаем фоновую задачу
+        asyncio.create_task(background_crypto_check())
+        print("🔍 Фоновая проверка криптоплатежей активна")
+        
+        # Запускаем бота
+        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
     try:
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        asyncio.run(run_bot_with_crypto_check())
     except KeyboardInterrupt:
         print("\n🛑 Бот остановлен пользователем")
         signal_handler(signal.SIGINT, None)

@@ -226,6 +226,47 @@ def get_user_wallet(user_id):
         logger.error(f"Ошибка получения кошелька: {e}")
         return 0.0
 
+def get_or_create_wallet(user_id, username=None, first_name=None):
+    """Получить или создать кошелек пользователя"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        # Проверяем существование кошелька
+        cursor.execute('SELECT * FROM wallets WHERE user_id = ?', (user_id,))
+        wallet = cursor.fetchone()
+        
+        if wallet:
+            return {
+                'user_id': wallet[0],
+                'username': wallet[1],
+                'first_name': wallet[2],
+                'balance': float(wallet[3]),
+                'created_at': wallet[4],
+                'updated_at': wallet[5]
+            }
+        else:
+            # Создаем новый кошелек
+            cursor.execute('''
+                INSERT INTO wallets (user_id, username, first_name, balance)
+                VALUES (?, ?, ?, 0.00)
+            ''', (user_id, username, first_name))
+            conn.commit()
+            
+            return {
+                'user_id': user_id,
+                'username': username,
+                'first_name': first_name,
+                'balance': 0.00,
+                'created_at': datetime.now().isoformat(),
+                'updated_at': datetime.now().isoformat()
+            }
+    except Exception as e:
+        logger.error(f"Ошибка получения/создания кошелька: {e}")
+        return None
+    finally:
+        conn.close()
+
 def update_wallet_balance(user_id, amount, transaction_type, description):
     """Обновить баланс кошелька"""
     try:
@@ -2013,13 +2054,19 @@ def main():
     # Инициализируем крипточекер
     global crypto_checker
     try:
+        from crypto_checker_simple import SimpleCryptoChecker
         crypto_checker = SimpleCryptoChecker()
+        
         # Проверяем, что методы существуют
         if hasattr(crypto_checker, 'get_crypto_price') and hasattr(crypto_checker, 'calculate_crypto_amount'):
             print("✅ Крипточекер инициализирован успешно")
+            print(f"📊 Доступные валюты: {list(crypto_checker.wallets.keys())}")
         else:
             print("⚠️ Крипточекер инициализирован, но методы недоступны")
             crypto_checker = None
+    except ImportError as e:
+        print(f"⚠️ Ошибка импорта crypto_checker_simple: {e}")
+        crypto_checker = None
     except Exception as e:
         print(f"⚠️ Ошибка инициализации крипточекера: {e}")
         crypto_checker = None

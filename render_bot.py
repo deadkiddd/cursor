@@ -684,10 +684,17 @@ async def handle_crypto_deposit_selection(query, data):
     user_id = query.from_user.id
     
     # Парсим данные: crypto_deposit_btc_100 -> currency=btc, amount=100
+    # crypto_deposit_usdc_sol_100 -> currency=usdc_sol, amount=100
     parts = data.split('_')
     if len(parts) >= 4:
-        currency = parts[2]  # btc, eth, usdt, sol
-        amount = float(parts[3])  # сумма
+        if len(parts) == 5 and parts[3] == 'sol':
+            # Для USDC и USDT в сети Solana
+            currency = f"{parts[2]}_{parts[3]}"  # usdc_sol, usdt_sol
+            amount = float(parts[4])  # сумма
+        else:
+            # Для обычных криптовалют
+            currency = parts[2]  # btc, eth, usdt, sol
+            amount = float(parts[3])  # сумма
         
         # Получаем адрес кошелька и рассчитываем количество криптовалюты
         global crypto_checker
@@ -701,7 +708,6 @@ async def handle_crypto_deposit_selection(query, data):
         
         # Получаем текущий курс
         currency_mapping = {
-            'btc': 'bitcoin',
             'eth': 'ethereum',
             'usdt': 'tether',
             'sol': 'solana',
@@ -875,7 +881,6 @@ async def show_crypto_deposit(query):
 💰 Минимальная сумма: 10 USD
 
 📝 Доступные валюты:
-• Bitcoin (BTC)
 • Ethereum (ETH)
 • USDT (ERC-20)
 • Solana (SOL)
@@ -1311,7 +1316,6 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
             """
             
             keyboard = [
-                [InlineKeyboardButton("Bitcoin (BTC)", callback_data=f"crypto_deposit_btc_{amount}")],
                 [InlineKeyboardButton("Ethereum (ETH)", callback_data=f"crypto_deposit_eth_{amount}")],
                 [InlineKeyboardButton("USDT (ERC-20)", callback_data=f"crypto_deposit_usdt_{amount}")],
                 [InlineKeyboardButton("Solana (SOL)", callback_data=f"crypto_deposit_sol_{amount}")],

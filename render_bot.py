@@ -375,6 +375,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_wallet_action(query, data)
     elif data.startswith("admin_"):
         await handle_admin_action(query, data)
+    elif data.startswith("deposit_"):
+        await handle_deposit_action(query, data)
+    elif data.startswith("crypto_deposit_"):
+        await handle_crypto_deposit_selection(query, data)
 
 async def show_catalog(query):
     """Показать каталог услуг"""
@@ -387,7 +391,6 @@ async def show_catalog(query):
     keyboard = [
         [InlineKeyboardButton("🎬 Подписки", callback_data="service_subscriptions")],
         [InlineKeyboardButton("💳 Переводы", callback_data="service_transfers")],
-        [InlineKeyboardButton("₿ Криптовалюты", callback_data="service_crypto")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_main")]
     ]
     
@@ -563,7 +566,6 @@ async def show_crypto(query):
 """
     
     keyboard = [
-        [InlineKeyboardButton("Bitcoin (BTC)", callback_data="order_crypto_btc")],
         [InlineKeyboardButton("Ethereum (ETH)", callback_data="order_crypto_eth")],
         [InlineKeyboardButton("USDT", callback_data="order_crypto_usdt")],
         [InlineKeyboardButton("Solana (SOL)", callback_data="order_crypto_sol")],
@@ -668,6 +670,69 @@ async def handle_admin_action(query, data):
     elif action == "stats":
         await show_admin_stats(query)
 
+async def handle_deposit_action(query, data):
+    """Обработка действий пополнения"""
+    action = data.replace("deposit_", "")
+    
+    if action == "card":
+        await show_card_deposit(query)
+    elif action == "crypto":
+        await show_crypto_deposit(query)
+
+async def handle_crypto_deposit_selection(query, data):
+    """Обработка выбора криптовалюты для пополнения"""
+    user_id = query.from_user.id
+    
+    # Парсим данные: crypto_deposit_btc_100 -> currency=btc, amount=100
+    parts = data.split('_')
+    if len(parts) >= 4:
+        currency = parts[2]  # btc, eth, usdt, sol
+        amount = float(parts[3])  # сумма
+        
+        commission = 0.03  # 3%
+        total_amount = amount + (amount * commission)
+        
+        # Получаем адрес кошелька
+        global crypto_checker
+        wallet_address = "Адрес не настроен"
+        
+        if crypto_checker and currency in crypto_checker.wallets:
+            wallet_address = crypto_checker.wallets[currency]
+        
+        crypto_text = f"""
+₿ **Пополнение {currency.upper()}**
+
+💰 Сумма: {amount:.2f} USD
+💸 Комиссия: {amount * commission:.2f} USD
+💳 Итого к оплате: {total_amount:.2f} USD
+
+📝 **Адрес для оплаты:**
+`{wallet_address}`
+
+⚠️ **Важно:**
+• Отправьте точную сумму в {currency.upper()}
+• Укажите в комментарии: {user_id}
+• После оплаты баланс пополнится автоматически
+• При проблемах обращайтесь к @swiwell
+
+⏰ Ожидайте подтверждения платежа...
+        """
+        
+        # Создаем заказ на пополнение
+        order_id = create_order(user_id, f'deposit_crypto_{currency}', amount, f"Пополнение {currency.upper()} {amount} USD")
+        
+        keyboard = [
+            [InlineKeyboardButton("💰 Мой кошелек", callback_data="wallet")],
+            [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(crypto_text, reply_markup=reply_markup, parse_mode='Markdown')
+        del user_states[user_id]
+    else:
+        await query.edit_message_text("❌ Ошибка обработки выбора криптовалюты")
+        del user_states[user_id]
+
 def get_service_info(service_type):
     """Получить информацию об услуге"""
     services = {
@@ -725,24 +790,7 @@ def get_service_info(service_type):
             'min_amount': 5,
             'commission': 0.08
         },
-        'crypto_btc': {
-            'name': 'Bitcoin (BTC)',
-            'description': 'Покупка/продажа Bitcoin',
-            'min_amount': 5,
-            'commission': 0.08
-        },
-        'crypto_eth': {
-            'name': 'Ethereum (ETH)',
-            'description': 'Покупка/продажа Ethereum',
-            'min_amount': 5,
-            'commission': 0.08
-        },
-        'crypto_usdt': {
-            'name': 'USDT',
-            'description': 'Покупка/продажа USDT',
-            'min_amount': 5,
-            'commission': 0.08
-        },
+
         'crypto_sol': {
             'name': 'Solana (SOL)',
             'description': 'Покупка/продажа Solana',
@@ -774,6 +822,69 @@ async def show_deposit_options(query):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(deposit_text, reply_markup=reply_markup)
+
+async def show_card_deposit(query):
+    """Показать пополнение картой"""
+    user_id = query.from_user.id
+    
+    card_text = f"""
+💳 Пополнение банковской картой
+
+💰 Минимальная сумма: 10 USD
+💸 Комиссия: 5%
+
+📝 Для пополнения:
+1. Введите сумму пополнения
+2. Получите реквизиты для оплаты
+3. После оплаты баланс пополнится автоматически
+
+Введите сумму пополнения (в USD):
+"""
+    
+    # Сохраняем состояние пользователя
+    user_states[user_id] = {
+        'state': 'waiting_deposit_amount',
+        'deposit_type': 'card'
+    }
+    
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="wallet_deposit")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(card_text, reply_markup=reply_markup)
+
+async def show_crypto_deposit(query):
+    """Показать пополнение криптовалютой"""
+    user_id = query.from_user.id
+    
+    crypto_text = f"""
+₿ Пополнение криптовалютой
+
+💰 Минимальная сумма: 10 USD
+💸 Комиссия: 3%
+
+📝 Доступные валюты:
+• Bitcoin (BTC)
+• Ethereum (ETH)
+• USDT (ERC-20)
+• Solana (SOL)
+
+📝 Для пополнения:
+1. Введите сумму пополнения
+2. Выберите криптовалюту
+3. Получите адрес для оплаты
+4. После оплаты баланс пополнится автоматически
+
+Введите сумму пополнения (в USD):
+"""
+    
+    # Сохраняем состояние пользователя
+    user_states[user_id] = {
+        'state': 'waiting_deposit_amount',
+        'deposit_type': 'crypto'
+    }
+    
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="wallet_deposit")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(crypto_text, reply_markup=reply_markup)
 
 async def show_wallet_history(query):
     """Показать историю кошелька"""
@@ -944,6 +1055,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         if state['state'] == 'waiting_amount':
             await handle_amount_input(update, context, text, state)
+        elif state['state'] == 'waiting_deposit_amount':
+            await handle_deposit_amount_input(update, context, text, state)
         else:
             # Неизвестное состояние, сбрасываем
             del user_states[user_id]
@@ -1064,81 +1177,156 @@ CVV: {card_info['cvv']}
         
         if user_balance < total_cost:
             await update.message.reply_text(
-                f"❌ Недостаточно средств!\n\n"
-                f"💰 Ваш баланс: {user_balance:.2f} USD\n"
-                f"💸 Стоимость заказа: {total_cost:.2f} USD\n"
-                f"📝 Сумма: {amount:.2f} USD\n"
-                f"💸 Комиссия: {amount * service_info['commission']:.2f} USD\n\n"
-                f"Пополните кошелек или выберите другую сумму:"
+                f"❌ Недостаточно средств на кошельке!\n"
+                f"💰 Необходимо: {total_cost:.2f} USD\n"
+                f"💳 Доступно: {user_balance:.2f} USD\n\n"
+                f"Пополните кошелек через /wallet"
             )
+            del user_states[user_id]
             return
         
-        # Создаем заказ
+        # Создаем заказ и списываем средства
         order_id = create_order(user_id, state['service_type'], amount, f"Заказ {service_info['name']}")
         
         if order_id:
-            # Списываем средства с кошелька
-            success = update_wallet_balance(user_id, -total_cost, 'order_payment', f'Оплата заказа #{order_id}')
+            # Списываем средства
+            success = update_wallet_balance(user_id, -total_cost, 'purchase', f'Покупка {service_info["name"]}')
             
             if success:
-                # Уведомляем администратора
-                if ADMIN_ID:
-                    try:
-                        admin_text = f"""
-🆕 **Новый заказ!**
+                # Выдаем карту
+                card_info = auto_issue_card(state['service_type'], amount, user_id)
+                
+                success_text = f"""
+✅ **Заказ выполнен!**
 
-🔹 Заказ #{order_id}
-👤 Пользователь: {update.effective_user.first_name} (ID: {user_id})
-🛒 Услуга: {service_info['name']}
 💰 Сумма: {amount:.2f} USD
 💸 Комиссия: {amount * service_info['commission']:.2f} USD
 💳 Итого: {total_cost:.2f} USD
-📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
-"""
-                        await context.bot.send_message(
-                            chat_id=ADMIN_ID,
-                            text=admin_text,
-                            parse_mode='Markdown'
-                        )
-                    except Exception as e:
-                        logger.error(f"Ошибка уведомления администратора: {e}")
-                
-                # Отправляем подтверждение пользователю
-                confirmation_text = f"""
-✅ **Заказ создан успешно!**
+🆔 Заказ: #{order_id}
 
-🔹 Номер заказа: #{order_id}
-🛒 Услуга: {service_info['name']}
-💰 Сумма: {amount:.2f} USD
-💸 Комиссия: {amount * service_info['commission']:.2f} USD
-💳 Итого списано: {total_cost:.2f} USD
-💵 Остаток на кошельке: {user_balance - total_cost:.2f} USD
+🎫 **Ваша карта:**
+Номер: {card_info['card_number']}
+Срок: {card_info['expiry']}
+CVV: {card_info['cvv']}
 
-📞 Для связи с оператором: {OPERATOR_USERNAME}
-⏰ Ожидайте обработки заказа
-"""
+Спасибо за покупку! 🎉
+                """
                 
                 keyboard = [
                     [InlineKeyboardButton("🛒 Новый заказ", callback_data="catalog")],
-                    [InlineKeyboardButton("💰 Мой кошелек", callback_data="wallet")],
                     [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
-                await update.message.reply_text(confirmation_text, reply_markup=reply_markup, parse_mode='Markdown')
-                
-                # Очищаем состояние пользователя
+                await update.message.reply_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
                 del user_states[user_id]
             else:
-                await update.message.reply_text("❌ Ошибка списания средств. Попробуйте еще раз или обратитесь к администратору.")
+                await update.message.reply_text("❌ Ошибка списания средств. Попробуйте еще раз.")
+                del user_states[user_id]
         else:
-            await update.message.reply_text("❌ Ошибка создания заказа. Попробуйте еще раз или обратитесь к администратору.")
+            await update.message.reply_text("❌ Ошибка создания заказа. Попробуйте еще раз.")
+            del user_states[user_id]
             
     except ValueError:
-        await update.message.reply_text("❌ Неверный формат суммы. Введите число (например: 50 или 50.5):")
+        await update.message.reply_text("❌ Неверный формат суммы. Введите число (например: 50.5)")
     except Exception as e:
-        logger.error(f"Ошибка обработки суммы: {e}")
-        await update.message.reply_text("❌ Произошла ошибка. Попробуйте еще раз или обратитесь к администратору.")
+        logger.error(f"Ошибка обработки суммы заказа: {e}")
+        await update.message.reply_text("❌ Произошла ошибка. Попробуйте еще раз.")
+        del user_states[user_id]
+
+async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: dict):
+    """Обработка ввода суммы пополнения"""
+    user_id = update.effective_user.id
+    deposit_type = state['deposit_type']
+    
+    try:
+        # Парсим сумму
+        amount = float(text.replace(',', '.'))
+        
+        # Проверяем минимальную сумму
+        min_amount = 10
+        if amount < min_amount:
+            await update.message.reply_text(
+                f"❌ Минимальная сумма пополнения: {min_amount} USD\n"
+                f"Попробуйте еще раз:"
+            )
+            return
+        
+        if deposit_type == 'card':
+            # Пополнение банковской картой
+            commission = 0.05  # 5%
+            total_amount = amount + (amount * commission)
+            
+            deposit_text = f"""
+💳 **Пополнение банковской картой**
+
+💰 Сумма: {amount:.2f} USD
+💸 Комиссия: {amount * commission:.2f} USD
+💳 Итого к оплате: {total_amount:.2f} USD
+
+📝 **Реквизиты для оплаты:**
+Банк: Tinkoff Bank
+Номер карты: 2200 7004 XXXX XXXX
+Получатель: Иван Иванов
+
+⚠️ **Важно:**
+• Укажите в комментарии: {user_id}
+• После оплаты баланс пополнится в течение 10 минут
+• При проблемах обращайтесь к @swiwell
+
+⏰ Ожидайте подтверждения платежа...
+            """
+            
+            # Создаем заказ на пополнение
+            order_id = create_order(user_id, 'deposit_card', amount, f"Пополнение картой {amount} USD")
+            
+            keyboard = [
+                [InlineKeyboardButton("💰 Мой кошелек", callback_data="wallet")],
+                [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(deposit_text, reply_markup=reply_markup, parse_mode='Markdown')
+            del user_states[user_id]
+            
+        elif deposit_type == 'crypto':
+            # Пополнение криптовалютой
+            commission = 0.03  # 3%
+            total_amount = amount + (amount * commission)
+            
+            # Показываем выбор криптовалюты
+            crypto_text = f"""
+₿ **Пополнение криптовалютой**
+
+💰 Сумма: {amount:.2f} USD
+💸 Комиссия: {amount * commission:.2f} USD
+💳 Итого к оплате: {total_amount:.2f} USD
+
+Выберите криптовалюту:
+            """
+            
+            keyboard = [
+                [InlineKeyboardButton("Bitcoin (BTC)", callback_data=f"crypto_deposit_btc_{amount}")],
+                [InlineKeyboardButton("Ethereum (ETH)", callback_data=f"crypto_deposit_eth_{amount}")],
+                [InlineKeyboardButton("USDT (ERC-20)", callback_data=f"crypto_deposit_usdt_{amount}")],
+                [InlineKeyboardButton("Solana (SOL)", callback_data=f"crypto_deposit_sol_{amount}")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="wallet_deposit")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # Сохраняем сумму в состоянии
+            user_states[user_id] = {
+                'state': 'waiting_crypto_selection',
+                'deposit_amount': amount
+            }
+            
+            await update.message.reply_text(crypto_text, reply_markup=reply_markup, parse_mode='Markdown')
+            
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат суммы. Введите число (например: 50.5)")
+    except Exception as e:
+        logger.error(f"Ошибка обработки суммы пополнения: {e}")
+        await update.message.reply_text("❌ Произошла ошибка. Попробуйте еще раз.")
         del user_states[user_id]
 
 # Flask маршруты

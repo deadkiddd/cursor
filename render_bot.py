@@ -9,6 +9,8 @@
 import os
 import logging
 import asyncio
+import tempfile
+import sys
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.error import Conflict, NetworkError, TimedOut
@@ -19,12 +21,41 @@ from datetime import datetime, timedelta
 import json
 import re
 import signal
-import sys
 import sqlite3
 from decimal import Decimal, ROUND_HALF_UP
 import threading
 import time
 from crypto_checker import CryptoPaymentChecker, auto_issue_card
+
+# Проверка на множественные экземпляры
+def check_single_instance():
+    """Проверка, что запущен только один экземпляр бота"""
+    lock_file = os.path.join(tempfile.gettempdir(), 'telegram_bot.lock')
+    
+    try:
+        # Проверяем, существует ли файл блокировки
+        if os.path.exists(lock_file):
+            with open(lock_file, 'r') as f:
+                pid = f.read().strip()
+            
+            # Проверяем, работает ли процесс
+            try:
+                os.kill(int(pid), 0)  # Проверка без отправки сигнала
+                print(f"❌ Бот уже запущен (PID: {pid})")
+                print("Остановите другой экземпляр бота перед запуском")
+                sys.exit(1)
+            except OSError:
+                # Процесс не существует, удаляем файл блокировки
+                os.remove(lock_file)
+        
+        # Создаем файл блокировки
+        with open(lock_file, 'w') as f:
+            f.write(str(os.getpid()))
+            
+        print(f"✅ Файл блокировки создан (PID: {os.getpid()})")
+        
+    except Exception as e:
+        print(f"⚠️ Ошибка проверки экземпляров: {e}")
 
 # Загружаем переменные окружения
 try:
@@ -335,6 +366,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_service_selection(query, data)
     elif data.startswith("back_"):
         await handle_back_button(query, data)
+    elif data.startswith("order_"):
+        await handle_order_selection(query, data)
+    elif data.startswith("wallet_"):
+        await handle_wallet_action(query, data)
+    elif data.startswith("admin_"):
+        await handle_admin_action(query, data)
 
 async def show_catalog(query):
     """Показать каталог услуг"""
@@ -572,6 +609,433 @@ async def show_main_menu(query):
     
     # Редактируем сообщение
     await query.edit_message_text(welcome_text, reply_markup=reply_markup)
+
+async def handle_order_selection(query, data):
+    """Обработка выбора заказа"""
+    service_type = data.replace("order_", "")
+    user_id = query.from_user.id
+    
+    # Получаем информацию об услуге
+    service_info = get_service_info(service_type)
+    
+    if not service_info:
+        await query.edit_message_text("❌ Услуга не найдена", reply_markup=get_back_keyboard("back_catalog"))
+        return
+    
+    # Показываем информацию об услуге и запрашиваем сумму
+    service_text = f"""
+🛒 {service_info['name']}
+
+📝 Описание: {service_info['description']}
+💰 Минимальная сумма: {service_info['min_amount']} USD
+💸 Комиссия: {service_info['commission']*100}%
+
+Введите сумму заказа (в USD):
+"""
+    
+    # Сохраняем состояние пользователя
+    user_states[user_id] = {
+        'state': 'waiting_amount',
+        'service_type': service_type,
+        'service_info': service_info
+    }
+    
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(service_text, reply_markup=reply_markup)
+
+async def handle_wallet_action(query, data):
+    """Обработка действий с кошельком"""
+    action = data.replace("wallet_", "")
+    
+    if action == "deposit":
+        await show_deposit_options(query)
+    elif action == "history":
+        await show_wallet_history(query)
+
+async def handle_admin_action(query, data):
+    """Обработка админ действий"""
+    action = data.replace("admin_", "")
+    
+    if action == "orders":
+        await show_all_orders(query)
+    elif action == "wallets":
+        await show_wallets_management(query)
+    elif action == "stats":
+        await show_admin_stats(query)
+
+def get_service_info(service_type):
+    """Получить информацию об услуге"""
+    services = {
+        'netflix': {
+            'name': 'Netflix Premium',
+            'description': 'Подписка на Netflix Premium с доступом к 4K контенту',
+            'min_amount': 10,
+            'commission': 0.08
+        },
+        'steam': {
+            'name': 'Steam Gift Cards',
+            'description': 'Подарочные карты Steam для покупки игр',
+            'min_amount': 10,
+            'commission': 0.08
+        },
+        'discord': {
+            'name': 'Discord Nitro',
+            'description': 'Подписка Discord Nitro с эксклюзивными возможностями',
+            'min_amount': 10,
+            'commission': 0.08
+        },
+        'spotify': {
+            'name': 'Spotify Premium',
+            'description': 'Подписка Spotify Premium без рекламы',
+            'min_amount': 10,
+            'commission': 0.08
+        },
+        'youtube': {
+            'name': 'YouTube Premium',
+            'description': 'YouTube Premium с фоновым воспроизведением',
+            'min_amount': 10,
+            'commission': 0.08
+        },
+        'transfer_eu': {
+            'name': 'Перевод на европейские карты',
+            'description': 'Перевод средств на карты европейских банков',
+            'min_amount': 50,
+            'commission': 0.08
+        },
+        'transfer_us': {
+            'name': 'Перевод на американские карты',
+            'description': 'Перевод средств на карты американских банков',
+            'min_amount': 50,
+            'commission': 0.08
+        },
+        'crypto_btc': {
+            'name': 'Bitcoin (BTC)',
+            'description': 'Покупка/продажа Bitcoin',
+            'min_amount': 5,
+            'commission': 0.08
+        },
+        'crypto_eth': {
+            'name': 'Ethereum (ETH)',
+            'description': 'Покупка/продажа Ethereum',
+            'min_amount': 5,
+            'commission': 0.08
+        },
+        'crypto_usdt': {
+            'name': 'USDT',
+            'description': 'Покупка/продажа USDT',
+            'min_amount': 5,
+            'commission': 0.08
+        },
+        'crypto_sol': {
+            'name': 'Solana (SOL)',
+            'description': 'Покупка/продажа Solana',
+            'min_amount': 5,
+            'commission': 0.08
+        }
+    }
+    
+    return services.get(service_type)
+
+def get_back_keyboard(back_action):
+    """Получить клавиатуру с кнопкой назад"""
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=back_action)]]
+    return InlineKeyboardMarkup(keyboard)
+
+async def show_deposit_options(query):
+    """Показать варианты пополнения"""
+    deposit_text = """
+💳 Пополнение кошелька
+
+Выберите способ пополнения:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("💳 Банковская карта", callback_data="deposit_card")],
+        [InlineKeyboardButton("₿ Криптовалюта", callback_data="deposit_crypto")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="wallet")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(deposit_text, reply_markup=reply_markup)
+
+async def show_wallet_history(query):
+    """Показать историю кошелька"""
+    user_id = query.from_user.id
+    
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT amount, transaction_type, description, created_at 
+            FROM wallet_transactions 
+            WHERE user_id = ? 
+            ORDER BY created_at DESC 
+            LIMIT 10
+        ''', (user_id,))
+        
+        transactions = cursor.fetchall()
+        conn.close()
+        
+        if transactions:
+            history_text = "📊 История транзакций:\n\n"
+            for transaction in transactions:
+                amount, transaction_type, description, created_at = transaction
+                emoji = "➕" if amount > 0 else "➖"
+                history_text += f"{emoji} {amount:.2f} USD\n"
+                history_text += f"   Тип: {transaction_type}\n"
+                history_text += f"   Описание: {description}\n"
+                history_text += f"   Дата: {created_at}\n\n"
+        else:
+            history_text = "📊 История транзакций пуста"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="wallet")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(history_text, reply_markup=reply_markup)
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения истории: {e}")
+        await query.edit_message_text("❌ Ошибка получения истории")
+
+async def show_all_orders(query):
+    """Показать все заказы (админ)"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT o.id, o.user_id, o.service_type, o.amount, o.status, o.created_at,
+                   w.balance
+            FROM orders o
+            LEFT JOIN wallets w ON o.user_id = w.user_id
+            ORDER BY o.created_at DESC
+            LIMIT 20
+        ''', ())
+        
+        orders = cursor.fetchall()
+        conn.close()
+        
+        if orders:
+            orders_text = "📋 Все заказы:\n\n"
+            for order in orders:
+                order_id, user_id, service_type, amount, status, created_at, balance = order
+                orders_text += f"🔹 Заказ #{order_id}\n"
+                orders_text += f"   Пользователь: {user_id}\n"
+                orders_text += f"   Услуга: {service_type}\n"
+                orders_text += f"   Сумма: {amount:.2f} USD\n"
+                orders_text += f"   Статус: {status}\n"
+                orders_text += f"   Баланс: {balance or 0:.2f} USD\n"
+                orders_text += f"   Дата: {created_at}\n\n"
+        else:
+            orders_text = "📋 Заказов пока нет"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(orders_text, reply_markup=reply_markup)
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения заказов: {e}")
+        await query.edit_message_text("❌ Ошибка получения заказов")
+
+async def show_wallets_management(query):
+    """Показать управление кошельками (админ)"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT user_id, balance, created_at
+            FROM wallets
+            ORDER BY balance DESC
+            LIMIT 10
+        ''', ())
+        
+        wallets = cursor.fetchall()
+        conn.close()
+        
+        if wallets:
+            wallets_text = "💰 Управление кошельками:\n\n"
+            for wallet in wallets:
+                user_id, balance, created_at = wallet
+                wallets_text += f"👤 Пользователь: {user_id}\n"
+                wallets_text += f"   Баланс: {balance:.2f} USD\n"
+                wallets_text += f"   Создан: {created_at}\n\n"
+        else:
+            wallets_text = "💰 Кошельков пока нет"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(wallets_text, reply_markup=reply_markup)
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения кошельков: {e}")
+        await query.edit_message_text("❌ Ошибка получения кошельков")
+
+async def show_admin_stats(query):
+    """Показать статистику (админ)"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        # Количество пользователей
+        cursor.execute('SELECT COUNT(*) FROM wallets')
+        users_count = cursor.fetchone()[0]
+        
+        # Количество заказов
+        cursor.execute('SELECT COUNT(*) FROM orders')
+        orders_count = cursor.fetchone()[0]
+        
+        # Общая сумма заказов
+        cursor.execute('SELECT SUM(amount) FROM orders')
+        total_amount = cursor.fetchone()[0] or 0
+        
+        # Общий баланс всех кошельков
+        cursor.execute('SELECT SUM(balance) FROM wallets')
+        total_balance = cursor.fetchone()[0] or 0
+        
+        conn.close()
+        
+        stats_text = f"""
+📊 Статистика бота:
+
+👥 Пользователей: {users_count}
+📋 Заказов: {orders_count}
+💰 Общая сумма заказов: {total_amount:.2f} USD
+💳 Общий баланс кошельков: {total_balance:.2f} USD
+"""
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(stats_text, reply_markup=reply_markup)
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики: {e}")
+        await query.edit_message_text("❌ Ошибка получения статистики")
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка текстовых сообщений"""
+    user_id = update.effective_user.id
+    text = update.message.text
+    
+    # Проверяем состояние пользователя
+    if user_id in user_states:
+        state = user_states[user_id]
+        
+        if state['state'] == 'waiting_amount':
+            await handle_amount_input(update, context, text, state)
+        else:
+            # Неизвестное состояние, сбрасываем
+            del user_states[user_id]
+            await update.message.reply_text("❌ Неизвестное состояние. Используйте /start для перезапуска.")
+    else:
+        # Пользователь не в состоянии ожидания
+        await update.message.reply_text("❌ Используйте кнопки меню для навигации или /start для перезапуска.")
+
+async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: dict):
+    """Обработка ввода суммы заказа"""
+    user_id = update.effective_user.id
+    
+    try:
+        # Парсим сумму
+        amount = float(text.replace(',', '.'))
+        
+        # Проверяем минимальную сумму
+        service_info = state['service_info']
+        if amount < service_info['min_amount']:
+            await update.message.reply_text(
+                f"❌ Минимальная сумма для {service_info['name']}: {service_info['min_amount']} USD\n"
+                f"Попробуйте еще раз:"
+            )
+            return
+        
+        # Проверяем баланс пользователя
+        user_balance = get_user_wallet(user_id)
+        total_cost = amount + (amount * service_info['commission'])
+        
+        if user_balance < total_cost:
+            await update.message.reply_text(
+                f"❌ Недостаточно средств!\n\n"
+                f"💰 Ваш баланс: {user_balance:.2f} USD\n"
+                f"💸 Стоимость заказа: {total_cost:.2f} USD\n"
+                f"📝 Сумма: {amount:.2f} USD\n"
+                f"💸 Комиссия: {amount * service_info['commission']:.2f} USD\n\n"
+                f"Пополните кошелек или выберите другую сумму:"
+            )
+            return
+        
+        # Создаем заказ
+        order_id = create_order(user_id, state['service_type'], amount, f"Заказ {service_info['name']}")
+        
+        if order_id:
+            # Списываем средства с кошелька
+            success = update_wallet_balance(user_id, -total_cost, 'order_payment', f'Оплата заказа #{order_id}')
+            
+            if success:
+                # Уведомляем администратора
+                if ADMIN_ID:
+                    try:
+                        admin_text = f"""
+🆕 **Новый заказ!**
+
+🔹 Заказ #{order_id}
+👤 Пользователь: {update.effective_user.first_name} (ID: {user_id})
+🛒 Услуга: {service_info['name']}
+💰 Сумма: {amount:.2f} USD
+💸 Комиссия: {amount * service_info['commission']:.2f} USD
+💳 Итого: {total_cost:.2f} USD
+📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+"""
+                        await context.bot.send_message(
+                            chat_id=ADMIN_ID,
+                            text=admin_text,
+                            parse_mode='Markdown'
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка уведомления администратора: {e}")
+                
+                # Отправляем подтверждение пользователю
+                confirmation_text = f"""
+✅ **Заказ создан успешно!**
+
+🔹 Номер заказа: #{order_id}
+🛒 Услуга: {service_info['name']}
+💰 Сумма: {amount:.2f} USD
+💸 Комиссия: {amount * service_info['commission']:.2f} USD
+💳 Итого списано: {total_cost:.2f} USD
+💵 Остаток на кошельке: {user_balance - total_cost:.2f} USD
+
+📞 Для связи с оператором: {OPERATOR_USERNAME}
+⏰ Ожидайте обработки заказа
+"""
+                
+                keyboard = [
+                    [InlineKeyboardButton("🛒 Новый заказ", callback_data="catalog")],
+                    [InlineKeyboardButton("💰 Мой кошелек", callback_data="wallet")],
+                    [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.message.reply_text(confirmation_text, reply_markup=reply_markup, parse_mode='Markdown')
+                
+                # Очищаем состояние пользователя
+                del user_states[user_id]
+            else:
+                await update.message.reply_text("❌ Ошибка списания средств. Попробуйте еще раз или обратитесь к администратору.")
+        else:
+            await update.message.reply_text("❌ Ошибка создания заказа. Попробуйте еще раз или обратитесь к администратору.")
+            
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат суммы. Введите число (например: 50 или 50.5):")
+    except Exception as e:
+        logger.error(f"Ошибка обработки суммы: {e}")
+        await update.message.reply_text("❌ Произошла ошибка. Попробуйте еще раз или обратитесь к администратору.")
+        del user_states[user_id]
 
 # Flask маршруты
 @app.route('/')
@@ -858,6 +1322,8 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Основная функция запуска
 def main():
     """Основная функция запуска"""
+    check_single_instance() # Вызываем проверку экземпляров перед запуском бота
+
     if not TELEGRAM_BOT_TOKEN:
         print("❌ TELEGRAM_BOT_TOKEN не установлен!")
         print("Установите переменную окружения TELEGRAM_BOT_TOKEN")
@@ -879,9 +1345,27 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CallbackQueryHandler(button_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     
     # Добавляем обработчик ошибок
     application.add_error_handler(error_handler)
+    
+    # Обработчик сигналов для корректного завершения
+    def signal_handler(signum, frame):
+        print(f"\n🛑 Получен сигнал {signum}, завершение работы...")
+        try:
+            # Удаляем файл блокировки
+            lock_file = os.path.join(tempfile.gettempdir(), 'telegram_bot.lock')
+            if os.path.exists(lock_file):
+                os.remove(lock_file)
+                print("✅ Файл блокировки удален")
+        except Exception as e:
+            print(f"⚠️ Ошибка удаления файла блокировки: {e}")
+        sys.exit(0)
+    
+    # Регистрируем обработчики сигналов
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
     # Запускаем Flask в отдельном потоке
     def run_flask():
@@ -897,9 +1381,11 @@ def main():
     try:
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     except KeyboardInterrupt:
-        print("\n🛑 Бот остановлен")
+        print("\n🛑 Бот остановлен пользователем")
+        signal_handler(signal.SIGINT, None)
     except Exception as e:
         print(f"❌ Ошибка запуска бота: {e}")
+        signal_handler(signal.SIGTERM, None)
 
 if __name__ == '__main__':
     main()

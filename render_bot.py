@@ -78,6 +78,8 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
 ADMIN_ID_2 = int(os.getenv('ADMIN_ID_2', 0))
+# Список администраторов (вы первый, новый админ второй)
+ADMIN_IDS = [990043534, 1100063554, ADMIN_ID, ADMIN_ID_2]  # Вы первый, новый админ второй
 OPERATOR_USERNAME = "@swiwell"
 OPERATOR_USERNAME_2 = "@realdealkid"
 PORT = int(os.getenv('PORT', 10000))
@@ -351,7 +353,7 @@ async def check_payment_command(update: Update, context: ContextTypes.DEFAULT_TY
     """Команда для проверки платежа (только для админов)"""
     user_id = update.effective_user.id
     
-    if str(user_id) not in [ADMIN_ID, ADMIN_ID_2]:
+    if user_id not in ADMIN_IDS:
         await update.message.reply_text("❌ У вас нет прав для использования этой команды")
         return
     
@@ -405,7 +407,7 @@ async def add_money_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для ручного пополнения кошелька (только для админов)"""
     user_id = update.effective_user.id
     
-    if str(user_id) not in [ADMIN_ID, ADMIN_ID_2]:
+    if user_id not in ADMIN_IDS:
         await update.message.reply_text("❌ У вас нет прав для использования этой команды")
         return
     
@@ -463,7 +465,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_orders(query)
     elif data == "help":
         await show_help(query)
-    elif data == "admin" and user_id in [ADMIN_ID, ADMIN_ID_2]:
+    elif data == "admin" and user_id in ADMIN_IDS:
         await show_admin_panel(query)
     elif data.startswith("service_"):
         await handle_service_selection(query, data)
@@ -707,7 +709,7 @@ async def show_main_menu(query):
         [InlineKeyboardButton("❓ Помощь", callback_data="help")]
     ]
     
-    if user_id in [ADMIN_ID, ADMIN_ID_2]:
+    if user_id in ADMIN_IDS:
         keyboard.append([InlineKeyboardButton("🔧 Админ панель", callback_data="admin")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)

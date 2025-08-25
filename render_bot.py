@@ -1003,6 +1003,46 @@ async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE
                 order_id = create_order(user_id, state['service_type'], amount, f"Криптоплатеж {currency.upper()}")
                 
                 if order_id:
+                    # Проверяем платеж сразу после создания заказа
+                    try:
+                        result = crypto_checker.check_payment(currency, amount, order_id)
+                        if result['success']:
+                            # Платеж найден, обрабатываем
+                            if crypto_checker.process_payment(result):
+                                # Обновляем статус заказа
+                                update_order_status(order_id, 'completed', ADMIN_ID, f'Криптоплатеж подтвержден: {result["amount"]} {result["currency"]}')
+                                
+                                # Выдаем карту
+                                card_info = auto_issue_card(state['service_type'], amount, user_id)
+                                
+                                success_text = f"""
+✅ **Платеж подтвержден!**
+
+💰 Сумма: {result['amount']} {result['currency'].upper()}
+🆔 Заказ: #{order_id}
+📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+
+🎫 **Ваша карта:**
+Номер: {card_info['card_number']}
+Срок: {card_info['expiry']}
+CVV: {card_info['cvv']}
+
+Спасибо за покупку! 🎉
+                                """
+                                
+                                keyboard = [
+                                    [InlineKeyboardButton("🛒 Новый заказ", callback_data="catalog")],
+                                    [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")]
+                                ]
+                                reply_markup = InlineKeyboardMarkup(keyboard)
+                                
+                                await update.message.reply_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
+                                del user_states[user_id]
+                                return
+                    except Exception as e:
+                        logger.error(f"Ошибка проверки криптоплатежа: {e}")
+                    
+                    # Если платеж не найден, показываем адрес для оплаты
                     keyboard = [
                         [InlineKeyboardButton("🛒 Новый заказ", callback_data="catalog")],
                         [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")]
@@ -1523,28 +1563,11 @@ def main():
     print(f"🌐 Flask сервер запущен на порту {PORT}")
     
     print("🤖 Бот запущен и готов к работе!")
+    print("🔍 Криптоплатежи будут проверяться при создании заказов")
     
-    # Запускаем бота с фоновой проверкой криптоплатежей
-    async def run_bot_with_crypto_check():
-        # Запускаем фоновую проверку криптоплатежей
-        async def background_crypto_check():
-            while True:
-                try:
-                    await check_crypto_payments()
-                    await asyncio.sleep(60)  # Проверяем каждую минуту
-                except Exception as e:
-                    logger.error(f"Ошибка фоновой проверки криптоплатежей: {e}")
-                    await asyncio.sleep(60)
-        
-        # Запускаем фоновую задачу
-        asyncio.create_task(background_crypto_check())
-        print("🔍 Фоновая проверка криптоплатежей активна")
-        
-        # Запускаем бота
-        await application.run_polling(allowed_updates=Update.ALL_TYPES)
-    
+    # Запускаем бота
     try:
-        asyncio.run(run_bot_with_crypto_check())
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
     except KeyboardInterrupt:
         print("\n🛑 Бот остановлен пользователем")
         signal_handler(signal.SIGINT, None)

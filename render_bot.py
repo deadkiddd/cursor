@@ -327,12 +327,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /wallet - Мой кошелек
 /orders - Мои заказы
 /help - Эта справка
+/check_payment - Проверить платеж (админы)
 
 💳 Доступные услуги:
 • Netflix, Steam, Discord
 • Spotify, YouTube Premium
 • Переводы на карты
-• Криптовалюты (BTC, ETH, USDT)
+• Криптовалюты (ETH, USDT, SOL)
 
 💰 Оплата:
 • Внутренний кошелек
@@ -345,6 +346,105 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
     
     await update.message.reply_text(help_text)
+
+async def check_payment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для проверки платежа (только для админов)"""
+    user_id = update.effective_user.id
+    
+    if str(user_id) not in [ADMIN_ID, ADMIN_ID_2]:
+        await update.message.reply_text("❌ У вас нет прав для использования этой команды")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Укажите ID заказа\nПример: /check_payment 123")
+        return
+    
+    try:
+        order_id = int(context.args[0])
+        
+        # Получаем информацию о заказе
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT user_id, service_type, amount, status, description 
+            FROM orders 
+            WHERE id = ?
+        ''', (order_id,))
+        
+        order = cursor.fetchone()
+        conn.close()
+        
+        if not order:
+            await update.message.reply_text(f"❌ Заказ {order_id} не найден")
+            return
+        
+        user_id_order, service_type, amount, status, description = order
+        
+        if not service_type.startswith('deposit_crypto_'):
+            await update.message.reply_text("❌ Этот заказ не является криптопополнением")
+            return
+        
+        currency = service_type.replace('deposit_crypto_', '')
+        
+        # Запускаем проверку платежа
+        await update.message.reply_text(f"🔍 Проверяю платеж для заказа {order_id}...")
+        
+        # Создаем задачу для проверки
+        asyncio.create_task(check_payment_background(order_id, currency, amount, user_id_order))
+        
+        await update.message.reply_text(f"✅ Проверка платежа запущена для заказа {order_id}")
+        
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат ID заказа")
+    except Exception as e:
+        logger.error(f"Ошибка проверки платежа: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def add_money_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для ручного пополнения кошелька (только для админов)"""
+    user_id = update.effective_user.id
+    
+    if str(user_id) not in [ADMIN_ID, ADMIN_ID_2]:
+        await update.message.reply_text("❌ У вас нет прав для использования этой команды")
+        return
+    
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Укажите ID пользователя и сумму\nПример: /add_money 123456789 100")
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+        amount = float(context.args[1])
+        
+        if amount <= 0:
+            await update.message.reply_text("❌ Сумма должна быть больше 0")
+            return
+        
+        # Пополняем кошелек
+        success = add_money_to_wallet(target_user_id, amount, f"Ручное пополнение администратором {user_id}")
+        
+        if success:
+            # Уведомляем пользователя
+            try:
+                from telegram import Bot
+                bot = Bot(token=TELEGRAM_BOT_TOKEN)
+                await bot.send_message(
+                    chat_id=target_user_id,
+                    text=f"💰 **Кошелек пополнен!**\n\n💵 Сумма: {amount:.2f} USD\n👤 Администратор: {user_id}\n\n🎉 Ваш баланс обновлен!"
+                )
+            except Exception as e:
+                logger.error(f"Ошибка уведомления пользователя: {e}")
+            
+            await update.message.reply_text(f"✅ Кошелек пользователя {target_user_id} пополнен на {amount:.2f} USD")
+        else:
+            await update.message.reply_text("❌ Ошибка пополнения кошелька")
+        
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат данных")
+    except Exception as e:
+        logger.error(f"Ошибка пополнения кошелька: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 # Обработчики callback
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -820,6 +920,9 @@ async def handle_crypto_deposit_selection(query, data):
         # Создаем заказ на пополнение
         order_id = create_order(user_id, f'deposit_crypto_{currency}', amount, f"Пополнение {currency.upper()} {amount} USD")
         
+        # Запускаем проверку платежа в фоне
+        asyncio.create_task(check_payment_background(order_id, currency, crypto_amount, user_id))
+        
         keyboard = [
             [InlineKeyboardButton("💰 Мой кошелек", callback_data="wallet")],
             [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")]
@@ -831,6 +934,74 @@ async def handle_crypto_deposit_selection(query, data):
     else:
         await query.edit_message_text("❌ Ошибка обработки выбора криптовалюты")
         del user_states[user_id]
+
+async def check_payment_background(order_id, currency, expected_amount, user_id):
+    """Фоновая проверка платежа"""
+    global crypto_checker
+    
+    try:
+        logger.info(f"Начинаем проверку платежа для заказа {order_id}, валюта: {currency}")
+        
+        # Проверяем платеж несколько раз с интервалом
+        for attempt in range(10):  # 10 попыток
+            await asyncio.sleep(30)  # Ждем 30 секунд между проверками
+            
+            if crypto_checker and hasattr(crypto_checker, 'check_payment'):
+                try:
+                    result = crypto_checker.check_payment(currency, expected_amount, order_id)
+                    logger.info(f"Попытка {attempt + 1}: результат проверки: {result}")
+                    
+                    if result.get('success'):
+                        # Платеж найден!
+                        amount = result.get('amount', expected_amount)
+                        
+                        # Пополняем кошелек пользователя
+                        success = add_money_to_wallet(user_id, amount, f"Пополнение {currency.upper()}")
+                        
+                        if success:
+                            # Обновляем статус заказа
+                            update_order_status(order_id, 'completed', ADMIN_ID, f"Платеж подтвержден: {result.get('tx_hash', 'N/A')}")
+                            
+                            # Уведомляем пользователя
+                            try:
+                                from telegram import Bot
+                                bot = Bot(token=TELEGRAM_BOT_TOKEN)
+                                await bot.send_message(
+                                    chat_id=user_id,
+                                    text=f"✅ **Платеж подтвержден!**\n\n💰 Сумма: {amount:.6f} {currency.upper()}\n💳 Зачислено на кошелек: {amount:.2f} USD\n\n🎉 Ваш кошелек пополнен!"
+                                )
+                            except Exception as e:
+                                logger.error(f"Ошибка уведомления пользователя: {e}")
+                            
+                            logger.info(f"Платеж успешно обработан для заказа {order_id}")
+                            return
+                        else:
+                            logger.error(f"Ошибка пополнения кошелька для заказа {order_id}")
+                    else:
+                        logger.info(f"Платеж не найден, попытка {attempt + 1}")
+                        
+                except Exception as e:
+                    logger.error(f"Ошибка проверки платежа: {e}")
+            else:
+                logger.error("crypto_checker недоступен для проверки платежа")
+                break
+        
+        # Если платеж не найден после всех попыток
+        logger.warning(f"Платеж не найден для заказа {order_id} после 10 попыток")
+        
+        # Уведомляем администратора
+        try:
+            from telegram import Bot
+            bot = Bot(token=TELEGRAM_BOT_TOKEN)
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"⚠️ **Платеж не найден**\n\nЗаказ: {order_id}\nВалюта: {currency}\nОжидаемая сумма: {expected_amount}\nПользователь: {user_id}\n\nПроверьте вручную!"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка уведомления администратора: {e}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка фоновой проверки платежа: {e}")
 
 def get_service_info(service_type):
     """Получить информацию об услуге"""
@@ -1812,6 +1983,8 @@ def main():
     # Добавляем обработчики
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("check_payment", check_payment_command))
+    application.add_handler(CommandHandler("add_money", add_money_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     

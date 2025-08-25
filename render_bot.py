@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Исправленная версия бота для деплоя на Render
-Совместимая с python-telegram-bot 20.7
+Файл для деплоя на Render.com
+Поддерживает webhook и polling режимы
 """
 
 import os
@@ -24,6 +24,7 @@ import sqlite3
 from decimal import Decimal, ROUND_HALF_UP
 import threading
 import time
+from crypto_checker import CryptoPaymentChecker, auto_issue_card
 
 # Загружаем переменные окружения
 try:
@@ -786,7 +787,7 @@ def main():
     print(f"📊 Порт: {PORT}")
     print(f"👤 Администратор: {ADMIN_ID}")
     
-    # Создаем приложение с правильным API
+    # Создаем приложение
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
     # Добавляем обработчики
@@ -804,7 +805,7 @@ def main():
     print(f"🌐 Flask сервер запущен на порту {PORT}")
     print("🤖 Бот запущен и готов к работе!")
     
-    # Запускаем бота с правильным методом
+    # Запускаем бота
     try:
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     except KeyboardInterrupt:

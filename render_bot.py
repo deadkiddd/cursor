@@ -25,7 +25,7 @@ import sqlite3
 from decimal import Decimal, ROUND_HALF_UP
 import threading
 import time
-from crypto_checker import CryptoPaymentChecker, auto_issue_card
+from crypto_checker_simple import SimpleCryptoChecker, auto_issue_card
 
 # Проверка на множественные экземпляры
 def check_single_instance():
@@ -99,6 +99,9 @@ user_message_times = {}
 
 # Система состояний пользователей
 user_states = {}
+
+# Глобальная переменная для крипточекера
+crypto_checker = None
 
 # Комиссии для разных услуг
 COMMISSION_RATES = {
@@ -710,6 +713,18 @@ def get_service_info(service_type):
             'min_amount': 50,
             'commission': 0.08
         },
+        'crypto_eth': {
+            'name': 'Ethereum (ETH)',
+            'description': 'Покупка Ethereum через криптоплатеж',
+            'min_amount': 5,
+            'commission': 0.08
+        },
+        'crypto_usdt': {
+            'name': 'USDT (Ethereum)',
+            'description': 'Покупка USDT через криптоплатеж',
+            'min_amount': 5,
+            'commission': 0.08
+        },
         'crypto_btc': {
             'name': 'Bitcoin (BTC)',
             'description': 'Покупка/продажа Bitcoin',
@@ -954,7 +969,56 @@ async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             return
         
-        # Проверяем баланс пользователя
+        # Проверяем, является ли это криптоплатежом
+        is_crypto_payment = state['service_type'].startswith('crypto_')
+        
+        if is_crypto_payment:
+            # Для криптоплатежей показываем адрес для оплаты
+            currency = state['service_type'].replace('crypto_', '')
+            global crypto_checker
+            
+            if crypto_checker:
+                wallet_address = crypto_checker.wallets.get(currency, 'Адрес не настроен')
+                
+                crypto_text = f"""
+💳 **Криптоплатеж {currency.upper()}**
+
+💰 Сумма: {amount:.2f} USD
+🛒 Услуга: {service_info['name']}
+💸 Комиссия: {amount * service_info['commission']:.2f} USD
+💳 Итого: {amount + (amount * service_info['commission']):.2f} USD
+
+📝 **Адрес для оплаты:**
+`{wallet_address}`
+
+⚠️ **Важно:**
+• Отправьте точную сумму в {currency.upper()}
+• Платеж будет проверен автоматически
+• После подтверждения карта будет выдана
+
+⏰ Ожидайте подтверждения платежа...
+"""
+                
+                # Создаем заказ без списания средств
+                order_id = create_order(user_id, state['service_type'], amount, f"Криптоплатеж {currency.upper()}")
+                
+                if order_id:
+                    keyboard = [
+                        [InlineKeyboardButton("🛒 Новый заказ", callback_data="catalog")],
+                        [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    
+                    await update.message.reply_text(crypto_text, reply_markup=reply_markup, parse_mode='Markdown')
+                    del user_states[user_id]
+                else:
+                    await update.message.reply_text("❌ Ошибка создания заказа. Попробуйте еще раз.")
+            else:
+                await update.message.reply_text("❌ Криптоплатежи временно недоступны. Попробуйте позже.")
+                del user_states[user_id]
+            return
+        
+        # Для обычных платежей проверяем баланс
         user_balance = get_user_wallet(user_id)
         total_cost = amount + (amount * service_info['commission'])
         
@@ -1273,6 +1337,79 @@ def withdraw_wallet(user_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# Функция для проверки криптоплатежей
+async def check_crypto_payments():
+    """Проверка криптоплатежей в фоновом режиме"""
+    global crypto_checker
+    
+    if not crypto_checker:
+        logger.warning("Крипточекер не инициализирован")
+        return
+    
+    try:
+        # Получаем все pending заказы с криптоплатежами
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, user_id, service_type, amount 
+            FROM orders 
+            WHERE status = 'pending' 
+            AND service_type LIKE 'crypto_%'
+        ''')
+        
+        pending_orders = cursor.fetchall()
+        conn.close()
+        
+        for order_id, user_id, service_type, amount in pending_orders:
+            # Определяем валюту
+            currency = service_type.replace('crypto_', '')
+            
+            # Проверяем платеж
+            result = crypto_checker.check_payment(currency, amount, order_id)
+            
+            if result['success']:
+                # Платеж найден, обрабатываем
+                if crypto_checker.process_payment(result):
+                    # Обновляем статус заказа
+                    update_order_status(order_id, 'completed', ADMIN_ID, f'Криптоплатеж подтвержден: {result["amount"]} {result["currency"]}')
+                    
+                    # Выдаем карту
+                    card_info = auto_issue_card(service_type, amount, user_id)
+                    
+                    # Уведомляем пользователя
+                    try:
+                        from telegram.ext import Application
+                        app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+                        
+                        success_text = f"""
+✅ **Платеж подтвержден!**
+
+💰 Сумма: {result['amount']} {result['currency'].upper()}
+🆔 Заказ: #{order_id}
+📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+
+🎫 **Ваша карта:**
+Номер: {card_info['card_number']}
+Срок: {card_info['expiry']}
+CVV: {card_info['cvv']}
+
+Спасибо за покупку! 🎉
+                        """
+                        
+                        await app.bot.send_message(
+                            chat_id=user_id,
+                            text=success_text,
+                            parse_mode='Markdown'
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка уведомления пользователя {user_id}: {e}")
+                    
+                    logger.info(f"Заказ {order_id} обработан успешно")
+                    
+    except Exception as e:
+        logger.error(f"Ошибка проверки криптоплатежей: {e}")
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок"""
     logger.error(f"Ошибка при обработке обновления: {context.error}")
@@ -1338,6 +1475,15 @@ def main():
     print(f"📊 Порт: {PORT}")
     print(f"👤 Администратор: {ADMIN_ID}")
     
+    # Инициализируем крипточекер
+    global crypto_checker
+    try:
+        crypto_checker = SimpleCryptoChecker()
+        print("✅ Крипточекер инициализирован успешно")
+    except Exception as e:
+        print(f"⚠️ Ошибка инициализации крипточекера: {e}")
+        crypto_checker = None
+    
     # Создаем приложение
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
@@ -1375,7 +1521,22 @@ def main():
     flask_thread.start()
     
     print(f"🌐 Flask сервер запущен на порту {PORT}")
+    
+    # Запускаем фоновую проверку криптоплатежей
+    async def background_crypto_check():
+        while True:
+            try:
+                await check_crypto_payments()
+                await asyncio.sleep(60)  # Проверяем каждую минуту
+            except Exception as e:
+                logger.error(f"Ошибка фоновой проверки криптоплатежей: {e}")
+                await asyncio.sleep(60)
+    
+    # Запускаем фоновую задачу
+    asyncio.create_task(background_crypto_check())
+    
     print("🤖 Бот запущен и готов к работе!")
+    print("🔍 Фоновая проверка криптоплатежей активна")
     
     # Запускаем бота
     try:

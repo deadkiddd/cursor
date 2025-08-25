@@ -247,6 +247,11 @@ def create_order(user_id, service_type, amount, description):
 # Основные команды бота
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start"""
+    # Получаем пользователя из сообщения
+    if not update.message:
+        logger.error("start_command вызвана без сообщения")
+        return
+    
     user = update.effective_user
     user_id = user.id
     
@@ -274,6 +279,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
+    # Отправляем новое сообщение
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -530,9 +536,42 @@ async def show_crypto(query):
 async def handle_back_button(query, data):
     """Обработка кнопки назад"""
     if data == "back_main":
-        await start_command(query, None)
+        # Просто показываем главное меню через редактирование сообщения
+        await show_main_menu(query)
     elif data == "back_catalog":
         await show_catalog(query)
+
+async def show_main_menu(query):
+    """Показать главное меню"""
+    user_id = query.from_user.id
+    user = query.from_user
+    
+    # Получаем баланс кошелька
+    balance = get_user_wallet(user_id)
+    
+    welcome_text = f"""
+🤖 Добро пожаловать в Финансовый Бот!
+
+👤 Пользователь: {user.first_name}
+💰 Баланс кошелька: {balance:.2f} USD
+
+Выберите действие:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("🛒 Каталог услуг", callback_data="catalog")],
+        [InlineKeyboardButton("💰 Мой кошелек", callback_data="wallet")],
+        [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")],
+        [InlineKeyboardButton("❓ Помощь", callback_data="help")]
+    ]
+    
+    if user_id in [ADMIN_ID, ADMIN_ID_2]:
+        keyboard.append([InlineKeyboardButton("🔧 Админ панель", callback_data="admin")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Редактируем сообщение
+    await query.edit_message_text(welcome_text, reply_markup=reply_markup)
 
 # Flask маршруты
 @app.route('/')
@@ -770,6 +809,52 @@ def withdraw_wallet(user_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок"""
+    logger.error(f"Ошибка при обработке обновления: {context.error}")
+    
+    # Получаем информацию о пользователе
+    user_info = "Неизвестный пользователь"
+    if update:
+        if update.effective_user:
+            user_info = f"{update.effective_user.first_name} (ID: {update.effective_user.id})"
+        elif update.callback_query and update.callback_query.from_user:
+            user_info = f"{update.callback_query.from_user.first_name} (ID: {update.callback_query.from_user.id})"
+    
+    # Уведомление администратора об ошибке
+    if ADMIN_ID:
+        try:
+            error_text = f"❌ **Ошибка в боте:**\n\n"
+            error_text += f"🔍 Детали: {context.error}\n"
+            error_text += f"👤 Пользователь: {user_info}\n"
+            error_text += f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+            
+            # Добавляем тип обновления
+            if update:
+                if update.message:
+                    error_text += f"\n📝 Тип: Сообщение"
+                elif update.callback_query:
+                    error_text += f"\n📝 Тип: Callback Query"
+                    error_text += f"\n🔘 Данные: {update.callback_query.data}"
+            
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=error_text,
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logger.error(f"Ошибка уведомления администратора об ошибке: {e}")
+    
+    # Отправляем сообщение пользователю об ошибке
+    try:
+        if update and update.effective_chat:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ Произошла ошибка при обработке запроса. Попробуйте еще раз или используйте /start для перезапуска."
+            )
+    except Exception as e:
+        logger.error(f"Ошибка отправки сообщения пользователю: {e}")
+
 # Основная функция запуска
 def main():
     """Основная функция запуска"""
@@ -794,6 +879,9 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Добавляем обработчик ошибок
+    application.add_error_handler(error_handler)
     
     # Запускаем Flask в отдельном потоке
     def run_flask():

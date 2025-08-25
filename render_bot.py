@@ -1,14 +1,40 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Файл для деплоя на Render.com
+Поддерживает webhook и polling режимы
+"""
+
 import os
 import logging
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.error import Conflict, NetworkError, TimedOut
 from flask import Flask, request, jsonify
 import threading
 import time
 from datetime import datetime, timedelta
 import json
 import re
+import signal
+import sys
+import sqlite3
+from decimal import Decimal, ROUND_HALF_UP
+import threading
+import time
+from crypto_checker import CryptoPaymentChecker, auto_issue_card
+
+# Загружаем переменные окружения
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ .env файл загружен успешно")
+except ImportError:
+    print("⚠️ python-dotenv не установлен, используем системные переменные")
+except Exception as e:
+    print(f"⚠️ Ошибка загрузки .env: {e}")
 
 # Настройка логирования
 logging.basicConfig(
@@ -20,539 +46,772 @@ logger = logging.getLogger(__name__)
 # Переменные окружения
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
+ADMIN_ID_2 = int(os.getenv('ADMIN_ID_2', 0))
+OPERATOR_USERNAME = "@swiwell"
+OPERATOR_USERNAME_2 = "@realdealkid"
 PORT = int(os.getenv('PORT', 10000))
+
+# Проверка переменных окружения
+print("🔍 Проверка переменных окружения:")
+print(f"TELEGRAM_BOT_TOKEN: {'✅ Установлен' if TELEGRAM_BOT_TOKEN else '❌ НЕ УСТАНОВЛЕН'}")
+print(f"ADMIN_ID: {ADMIN_ID if ADMIN_ID else '❌ НЕ УСТАНОВЛЕН'}")
+print(f"ADMIN_ID_2: {ADMIN_ID_2 if ADMIN_ID_2 else '❌ НЕ УСТАНОВЛЕН'}")
+print(f"PORT: {PORT}")
 
 # Настройки безопасности
 MAX_MESSAGE_LENGTH = 4096
-RATE_LIMIT_MESSAGES = 60  # сообщений в минуту
-RATE_LIMIT_WINDOW = 40  # секунд
+RATE_LIMIT_MESSAGES = 60
+RATE_LIMIT_WINDOW = 60
 
 # Кэш для rate limiting
 user_message_times = {}
 
-# Flask приложение для проверки состояния
+# Система состояний пользователей
+user_states = {}
+
+# Комиссии для разных услуг
+COMMISSION_RATES = {
+    'netflix': 0.08,
+    'steam': 0.08,
+    'discord': 0.08,
+    'spotify': 0.08,
+    'youtube': 0.08,
+    'twitch': 0.08,
+    'apple_music': 0.08,
+    'google_play': 0.08,
+    'transfer_eu': 0.08,
+    'transfer_us': 0.08,
+    'crypto_btc': 0.08,
+    'crypto_eth': 0.08,
+    'crypto_usdt': 0.08,
+    'crypto_sol': 0.08,
+    'bybit_transfer': 0.08
+}
+
+# Минимальные суммы
+MIN_AMOUNTS = {
+    'cards': 10,
+    'transfers': 50,
+    'crypto': 5
+}
+
+# Создаем Flask приложение
 app = Flask(__name__)
 
-@app.route('/')
-def health_check():
-    return jsonify({
-        "status": "healthy", 
-        "bot": "running",
-        "timestamp": datetime.now().isoformat(),
-        "uptime": get_uptime()
-    })
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    return jsonify({"status": "ok"})
-
-@app.route('/stats', methods=['GET'])
-def get_stats():
-    return jsonify({
-        "active_users": len(user_message_times),
-        "timestamp": datetime.now().isoformat()
-    })
-
-def start_flask():
+# Инициализация базы данных
+def init_database():
+    """Инициализация базы данных"""
     try:
-        app.run(host='0.0.0.0', port=PORT, debug=False)
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        # Таблица кошельков
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS wallets (
+                user_id INTEGER PRIMARY KEY,
+                balance REAL DEFAULT 0.0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Таблица транзакций кошельков
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS wallet_transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                amount REAL,
+                transaction_type TEXT,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES wallets (user_id)
+            )
+        ''')
+        
+        # Таблица заказов
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                service_type TEXT,
+                amount REAL,
+                status TEXT DEFAULT 'pending',
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES wallets (user_id)
+            )
+        ''')
+        
+        # Таблица истории статусов заказов
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS order_status_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER,
+                status TEXT,
+                admin_id INTEGER,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (order_id) REFERENCES orders (id)
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        print("✅ База данных инициализирована")
+        
     except Exception as e:
-        logger.error(f"Ошибка запуска Flask: {e}")
+        print(f"❌ Ошибка инициализации базы данных: {e}")
 
-def get_uptime():
-    """Получить время работы бота"""
-    if hasattr(get_uptime, 'start_time'):
-        return str(datetime.now() - get_uptime.start_time)
-    get_uptime.start_time = datetime.now()
-    return "0:00:00"
+# Инициализируем базу данных
+init_database()
 
-def check_rate_limit(user_id):
-    """Проверка ограничения скорости сообщений"""
-    current_time = time.time()
-    if user_id not in user_message_times:
-        user_message_times[user_id] = []
-    
-    # Удаляем старые сообщения
-    user_message_times[user_id] = [
-        msg_time for msg_time in user_message_times[user_id] 
-        if current_time - msg_time < RATE_LIMIT_WINDOW
-    ]
-    
-    # Проверяем лимит
-    if len(user_message_times[user_id]) >= RATE_LIMIT_MESSAGES:
+# Функции для работы с базой данных
+def get_user_wallet(user_id):
+    """Получить кошелек пользователя"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        # Создаем кошелек если не существует
+        cursor.execute('''
+            INSERT OR IGNORE INTO wallets (user_id, balance)
+            VALUES (?, 0.0)
+        ''', (user_id,))
+        
+        cursor.execute('SELECT balance FROM wallets WHERE user_id = ?', (user_id,))
+        result = cursor.fetchone()
+        conn.commit()
+        conn.close()
+        
+        return result[0] if result else 0.0
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения кошелька: {e}")
+        return 0.0
+
+def update_wallet_balance(user_id, amount, transaction_type, description):
+    """Обновить баланс кошелька"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        # Обновляем баланс
+        cursor.execute('''
+            UPDATE wallets 
+            SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        ''', (amount, user_id))
+        
+        # Добавляем транзакцию
+        cursor.execute('''
+            INSERT INTO wallet_transactions (user_id, amount, transaction_type, description)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, amount, transaction_type, description))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        logger.error(f"Ошибка обновления кошелька: {e}")
         return False
-    
-    # Добавляем текущее сообщение
-    user_message_times[user_id].append(current_time)
-    return True
 
-def sanitize_text(text):
-    """Очистка текста от потенциально опасных символов"""
-    if not text:
-        return ""
-    # Удаляем HTML теги и экранируем специальные символы
-    text = re.sub(r'<[^>]+>', '', text)
-    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    return text[:MAX_MESSAGE_LENGTH]
-
-async def send_admin_notification(context, title, user, additional_info=""):
-    """Отправка уведомления администратору"""
-    if not ADMIN_ID:
-        return
-    
+def create_order(user_id, service_type, amount, description):
+    """Создать новый заказ"""
     try:
-        message = f"{title}\n\n"
-        message += f"👤 Пользователь: {user.first_name} (@{user.username or 'без username'})\n"
-        message += f"🆔 ID: `{user.id}`\n"
-        message += f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
         
-        if additional_info:
-            message += f"\n\n{additional_info}"
+        cursor.execute('''
+            INSERT INTO orders (user_id, service_type, amount, description)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, service_type, amount, description))
         
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=message,
-            parse_mode='Markdown'
-        )
+        order_id = cursor.lastrowid
+        
+        # Добавляем начальный статус
+        cursor.execute('''
+            INSERT INTO order_status_history (order_id, status, notes)
+            VALUES (?, 'pending', 'Заказ создан')
+        ''', (order_id,))
+        
+        conn.commit()
+        conn.close()
+        return order_id
+        
     except Exception as e:
-        logger.error(f"Ошибка отправки уведомления администратору: {e}")
+        logger.error(f"Ошибка создания заказа: {e}")
+        return None
 
-# Обработчики бота
+# Основные команды бота
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка команды /start"""
+    """Команда /start"""
     user = update.effective_user
-    chat_id = update.effective_chat.id
+    user_id = user.id
     
-    # Проверка rate limit
-    if not check_rate_limit(user.id):
-        await update.message.reply_text("⚠️ Слишком много сообщений. Подождите немного.")
-        return
+    # Получаем баланс кошелька
+    balance = get_user_wallet(user_id)
     
-    # Уведомление администратора о новом пользователе
-    await send_admin_notification(
-        context, 
-        "🆕 **Новый пользователь зарегистрирован!**", 
-        user
-    )
-    
-    welcome_text = """
-🤖 **Добро пожаловать в Финансовый Бот!**
+    welcome_text = f"""
+🤖 Добро пожаловать в Финансовый Бот!
 
-Мы предоставляем следующие услуги:
-• 💳 **Оплата зарубежными картами** (Netflix, Steam, Discord, Spotify и др.)
-• 💸 **Переводы на европейские и американские банковские карты**
-• ₿ **Поддержка криптовалют**: BTC, ETH, USDT (TRC20/ERC20)
+👤 Пользователь: {user.first_name}
+💰 Баланс кошелька: {balance:.2f} USD
 
-📋 **Условия:**
-• Минимальная сумма: $10
-• Комиссия: 5-15% в зависимости от услуги
-• Время обработки: 10-30 минут
-• Круглосуточная поддержка
-
-Выберите нужную услугу:
+Выберите действие:
 """
     
     keyboard = [
-        [InlineKeyboardButton("💳 Оплата картами", callback_data="payment_cards")],
-        [InlineKeyboardButton("💸 Переводы", callback_data="transfers")],
-        [InlineKeyboardButton("₿ Криптовалюты", callback_data="crypto")],
-        [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
-        [InlineKeyboardButton("💰 Прайс-лист", callback_data="price_list")]
+        [InlineKeyboardButton("🛒 Каталог услуг", callback_data="catalog")],
+        [InlineKeyboardButton("💰 Мой кошелек", callback_data="wallet")],
+        [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")],
+        [InlineKeyboardButton("❓ Помощь", callback_data="help")]
     ]
+    
+    if user_id in [ADMIN_ID, ADMIN_ID_2]:
+        keyboard.append([InlineKeyboardButton("🔧 Админ панель", callback_data="admin")])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка команды /menu"""
-    user = update.effective_user
-    
-    # Проверка rate limit
-    if not check_rate_limit(user.id):
-        await update.message.reply_text("⚠️ Слишком много сообщений. Подождите немного.")
-        return
-    
-    keyboard = [
-        [InlineKeyboardButton("💳 Оплата картами", callback_data="payment_cards")],
-        [InlineKeyboardButton("💸 Переводы", callback_data="transfers")],
-        [InlineKeyboardButton("₿ Криптовалюты", callback_data="crypto")],
-        [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
-        [InlineKeyboardButton("💰 Прайс-лист", callback_data="price_list")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text("Выберите категорию услуг:", reply_markup=reply_markup)
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка команды /help"""
-    user = update.effective_user
-    
-    # Проверка rate limit
-    if not check_rate_limit(user.id):
-        await update.message.reply_text("⚠️ Слишком много сообщений. Подождите немного.")
-        return
-    
+    """Команда /help"""
     help_text = """
-📖 **Справка по использованию бота:**
+❓ Справка по использованию бота:
 
-**Основные команды:**
+📋 Основные команды:
 /start - Главное меню
-/menu - Каталог услуг
+/menu - Каталог услуг  
+/wallet - Мой кошелек
+/orders - Мои заказы
 /help - Эта справка
-/address - Реквизиты для оплаты
-/price - Прайс-лист
 
-**Как пользоваться:**
-1. Выберите нужную услугу из меню
-2. Укажите сумму и детали
-3. Получите реквизиты для оплаты
-4. После оплаты свяжитесь с оператором
+💳 Доступные услуги:
+• Netflix, Steam, Discord
+• Spotify, YouTube Premium
+• Переводы на карты
+• Криптовалюты (BTC, ETH, USDT)
 
-**Поддержка:**
-• @swiwell - Основной оператор
-• @Deadkid - Техническая поддержка
-
-**Время работы:** Круглосуточно
-
-**Ограничения:**
-• Максимум 5 сообщений в минуту
-• Максимальная длина сообщения: 4096 символов
-"""
-    await update.message.reply_text(help_text, parse_mode='Markdown')
-
-async def address_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка команды /address"""
-    user = update.effective_user
-    
-    # Проверка rate limit
-    if not check_rate_limit(user.id):
-        await update.message.reply_text("⚠️ Слишком много сообщений. Подождите немного.")
-        return
-    
-    address_text = """
-🏦 **Реквизиты для оплаты:**
-
-**Банковская карта:**
-Номер: 1234 5678 9012 3456
-Срок действия: 12/25
-CVV: 123
-
-**Криптокошелек:**
-BTC: `bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh`
-ETH: `0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6`
-USDT (TRC20): `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`
-
-⚠️ **Важно:** Указывайте комментарий к платежу с вашим Telegram ID: `{user_id}`
-
-🔒 **Безопасность:** Все транзакции защищены и отслеживаются
-""".format(user_id=user.id)
-    
-    await update.message.reply_text(address_text, parse_mode='Markdown')
-
-async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка команды /price"""
-    user = update.effective_user
-    
-    # Проверка rate limit
-    if not check_rate_limit(user.id):
-        await update.message.reply_text("⚠️ Слишком много сообщений. Подождите немного.")
-        return
-    
-    price_text = """
-💰 **Прайс-лист услуг:**
-
-**💳 Оплата зарубежными картами:**
-• Netflix: $15-50 (комиссия 10%)
-• Steam: $10-100 (комиссия 8%)
-• Discord Nitro: $10-20 (комиссия 12%)
-• Spotify: $10-15 (комиссия 15%)
-• YouTube Premium: $12-18 (комиссия 13%)
-• Twitch Subscriptions: $5-25 (комиссия 11%)
-
-**💸 Переводы на карты:**
-• Европейские карты: 5-8% комиссия
-• Американские карты: 8-12% комиссия
-• Минимальная сумма: $10
-
-**₿ Криптовалюты:**
-• BTC: 3% комиссия
-• ETH: 4% комиссия
-• USDT: 2% комиссия
-
-**⏱️ Время обработки:** 10-30 минут
-
-**💳 Способы оплаты:**
-• Банковские карты
+💰 Оплата:
+• Внутренний кошелек
 • Криптовалюты
-• Электронные кошельки
-"""
-    await update.message.reply_text(price_text, parse_mode='Markdown')
+• Переводы
 
+📞 Поддержка:
+• Основной оператор: @swiwell
+• Техподдержка: @Deadkid
+"""
+    
+    await update.message.reply_text(help_text)
+
+# Обработчики callback
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатий на кнопки"""
+    """Обработчик нажатий кнопок"""
     query = update.callback_query
     await query.answer()
     
-    user = update.effective_user
-    chat_id = update.effective_chat.id
+    user_id = query.from_user.id
+    data = query.data
     
-    # Проверка rate limit
-    if not check_rate_limit(user.id):
-        await query.edit_message_text("⚠️ Слишком много запросов. Подождите немного.")
-        return
-    
-    if query.data == "payment_cards":
-        text = """
-💳 **Оплата зарубежными картами:**
+    if data == "catalog":
+        await show_catalog(query)
+    elif data == "wallet":
+        await show_wallet(query)
+    elif data == "orders":
+        await show_orders(query)
+    elif data == "help":
+        await show_help(query)
+    elif data == "admin" and user_id in [ADMIN_ID, ADMIN_ID_2]:
+        await show_admin_panel(query)
+    elif data.startswith("service_"):
+        await handle_service_selection(query, data)
+    elif data.startswith("back_"):
+        await handle_back_button(query, data)
 
-Доступные сервисы:
-• Netflix Premium
-• Steam Gift Cards
-• Discord Nitro
-• Spotify Premium
-• YouTube Premium
-• Twitch Subscriptions
-• Apple Music
-• Google Play
-• И другие...
+async def show_catalog(query):
+    """Показать каталог услуг"""
+    catalog_text = """
+🛒 Каталог услуг
 
-Укажите:
-1. Сервис
-2. Сумму
-3. Длительность подписки
-
-Пример: "Netflix Premium, $15, 1 месяц"
-
-🔒 **Гарантии:**
-• 100% успешность операций
-• Возврат средств при проблемах
-• Поддержка 24/7
+Выберите категорию:
 """
-        keyboard = [
-            [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
-            [InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
-        
-        # Уведомление администратора о заявке
-        await send_admin_notification(
-            context,
-            "💳 **Заявка на оплату картами!**",
-            user
-        )
-        
-    elif query.data == "transfers":
-        text = """
-💸 **Переводы на зарубежные карты:**
+    
+    keyboard = [
+        [InlineKeyboardButton("🎬 Подписки", callback_data="service_subscriptions")],
+        [InlineKeyboardButton("💳 Переводы", callback_data="service_transfers")],
+        [InlineKeyboardButton("₿ Криптовалюты", callback_data="service_crypto")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_main")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(catalog_text, reply_markup=reply_markup)
 
-Поддерживаемые страны:
-• 🇺🇸 США
-• 🇪🇺 Европа (СЕПА)
-• 🇬🇧 Великобритания
-• 🇨🇦 Канада
-• 🇦🇺 Австралия
-• 🇨🇭 Швейцария
+async def show_wallet(query):
+    """Показать кошелек пользователя"""
+    user_id = query.from_user.id
+    balance = get_user_wallet(user_id)
+    
+    wallet_text = f"""
+💰 Мой кошелек
 
-Укажите:
-1. Страну получателя
-2. Сумму
-3. Номер карты получателя
+💵 Баланс: {balance:.2f} USD
 
-Комиссия: 5-12% в зависимости от страны
-
-🔒 **Безопасность:**
-• Шифрованная передача данных
-• Проверка получателя
-• Отслеживание транзакций
+Выберите действие:
 """
-        keyboard = [
-            [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
-            [InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
-        
-        # Уведомление администратора о заявке на перевод
-        await send_admin_notification(
-            context,
-            "💸 **Заявка на перевод!**",
-            user
-        )
-        
-    elif query.data == "crypto":
-        text = """
-₿ **Криптовалютные операции:**
-
-Поддерживаемые сети:
-• Bitcoin (BTC)
-• Ethereum (ETH)
-• USDT (TRC20/ERC20)
-• USDC (ERC20)
-• BNB (BSC)
-
-Услуги:
-• Покупка криптовалют
-• Продажа криптовалют
-• Переводы между кошельками
-• Конвертация валют
-
-Комиссия: 2-4%
-
-🔒 **Особенности:**
-• Мгновенные транзакции
-• Низкие комиссии
-• Анонимность
-• Глобальная доступность
-"""
-        keyboard = [
-            [InlineKeyboardButton("📞 Связаться с оператором", callback_data="contact_operator")],
-            [InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
-        
-    elif query.data == "contact_operator":
-        text = """
-📞 **Связаться с оператором:**
-
-Для оформления заказа или получения консультации:
-
-**Основной оператор:** @swiwell
-**Техническая поддержка:** @Deadkid
-
-⚠️ **Важно:** При обращении указывайте:
-• Ваш Telegram ID: `{user_id}`
-• Выбранную услугу
-• Сумму операции
-• Дополнительные детали
-
-Время ответа: 5-15 минут
-
-🕐 **Время работы:** Круглосуточно
-""".format(user_id=user.id)
-        keyboard = [
-            [InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu")],
-            [InlineKeyboardButton("💰 Прайс-лист", callback_data="price_list")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
-        
-        # Уведомление администратора о запросе связи
-        await send_admin_notification(
-            context,
-            "📞 **Запрос на связь!**",
-            user
-        )
-        
-    elif query.data == "price_list":
-        await price_command(update, context)
-        
-    elif query.data == "back_to_menu":
-        await menu_command(update, context)
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка текстовых сообщений"""
-    user = update.effective_user
-    chat_id = update.effective_chat.id
-    message_text = sanitize_text(update.message.text)
     
-    # Проверка rate limit
-    if not check_rate_limit(user.id):
-        await update.message.reply_text("⚠️ Слишком много сообщений. Подождите немного.")
-        return
+    keyboard = [
+        [InlineKeyboardButton("💳 Пополнить", callback_data="wallet_deposit")],
+        [InlineKeyboardButton("📊 История", callback_data="wallet_history")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_main")]
+    ]
     
-    # Пересылка сообщения администратору
-    if ADMIN_ID and chat_id != ADMIN_ID:
-        try:
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"💬 **Сообщение от пользователя:**\n\n"
-                     f"👤 {user.first_name} (@{user.username or 'без username'})\n"
-                     f"🆔 ID: `{user.id}`\n"
-                     f"📝 Текст: {message_text}\n"
-                     f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}",
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            logger.error(f"Ошибка пересылки сообщения администратору: {e}")
-    
-    # Автоматические ответы на частые вопросы
-    if any(word in message_text.lower() for word in ['привет', 'hello', 'hi', 'здравствуйте']):
-        await update.message.reply_text("Привет! 👋 Используйте /menu для выбора услуг.")
-    elif any(word in message_text.lower() for word in ['цена', 'стоимость', 'price', 'прайс']):
-        await price_command(update, context)
-    elif any(word in message_text.lower() for word in ['помощь', 'help', 'справка']):
-        await help_command(update, context)
-    elif any(word in message_text.lower() for word in ['реквизиты', 'адрес', 'address']):
-        await address_command(update, context)
-    elif any(word in message_text.lower() for word in ['статус', 'status']):
-        await update.message.reply_text("✅ Бот работает нормально. Время работы: " + get_uptime())
-    else:
-        await update.message.reply_text(
-            "Для получения помощи используйте /help или свяжитесь с оператором @swiwell"
-        )
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(wallet_text, reply_markup=reply_markup)
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ошибок"""
-    logger.error(f"Ошибка при обработке обновления: {context.error}")
-    
-    # Уведомление администратора об ошибке
-    if ADMIN_ID:
-        try:
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"❌ **Ошибка в боте:**\n\n"
-                     f"🔍 Детали: {context.error}\n"
-                     f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}",
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            logger.error(f"Ошибка уведомления администратора об ошибке: {e}")
-
-def main():
-    """Основная функция"""
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN не установлен!")
-        return
-    
-    if not ADMIN_ID:
-        logger.warning("ADMIN_ID не установлен! Уведомления администратора отключены.")
-    
-    # Запуск Flask сервера в отдельном потоке
-    flask_thread = threading.Thread(target=start_flask, daemon=True)
-    flask_thread.start()
+async def show_orders(query):
+    """Показать заказы пользователя"""
+    user_id = query.from_user.id
     
     try:
-        # Создание приложения с обработкой ошибок
-        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
         
-        # Добавление обработчиков
-        application.add_handler(CommandHandler("start", start_command))
-        application.add_handler(CommandHandler("menu", menu_command))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("address", address_command))
-        application.add_handler(CommandHandler("price", price_command))
-        application.add_handler(CallbackQueryHandler(button_callback))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        cursor.execute('''
+            SELECT id, service_type, amount, status, created_at 
+            FROM orders 
+            WHERE user_id = ? 
+            ORDER BY created_at DESC 
+            LIMIT 10
+        ''', (user_id,))
         
-        # Добавление обработчика ошибок
-        application.add_error_handler(error_handler)
+        orders = cursor.fetchall()
+        conn.close()
         
-        # Запуск бота с drop_pending_updates для избежания конфликтов
-        logger.info("Запуск исправленного бота...")
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES, 
-            drop_pending_updates=True,
-            close_loop=False
-        )
+        if orders:
+            orders_text = "📋 Ваши заказы:\n\n"
+            for order in orders:
+                order_id, service_type, amount, status, created_at = order
+                orders_text += f"🔹 Заказ #{order_id}\n"
+                orders_text += f"   Услуга: {service_type}\n"
+                orders_text += f"   Сумма: {amount:.2f} USD\n"
+                orders_text += f"   Статус: {status}\n"
+                orders_text += f"   Дата: {created_at}\n\n"
+        else:
+            orders_text = "📋 У вас пока нет заказов"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_main")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(orders_text, reply_markup=reply_markup)
         
     except Exception as e:
-        logger.error(f"Критическая ошибка при запуске бота: {e}")
-        # Попытка перезапуска через 30 секунд
-        time.sleep(30)
-        main()
+        logger.error(f"Ошибка получения заказов: {e}")
+        await query.edit_message_text("❌ Ошибка получения заказов")
+
+async def show_help(query):
+    """Показать справку"""
+    help_text = """
+❓ Справка по использованию бота:
+
+📋 Основные команды:
+/start - Главное меню
+/menu - Каталог услуг  
+/wallet - Мой кошелек
+/orders - Мои заказы
+/help - Эта справка
+
+💳 Доступные услуги:
+• Netflix, Steam, Discord
+• Spotify, YouTube Premium
+• Переводы на карты
+• Криптовалюты (BTC, ETH, USDT)
+
+💰 Оплата:
+• Внутренний кошелек
+• Криптовалюты
+• Переводы
+
+📞 Поддержка:
+• Основной оператор: @swiwell
+• Техподдержка: @Deadkid
+"""
+    
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_main")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(help_text, reply_markup=reply_markup)
+
+async def show_admin_panel(query):
+    """Показать админ панель"""
+    admin_text = """
+🔧 Админ панель
+
+Выберите действие:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("📋 Все заказы", callback_data="admin_orders")],
+        [InlineKeyboardButton("💰 Управление кошельками", callback_data="admin_wallets")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_main")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(admin_text, reply_markup=reply_markup)
+
+async def handle_service_selection(query, data):
+    """Обработка выбора услуги"""
+    service_type = data.replace("service_", "")
+    
+    if service_type == "subscriptions":
+        await show_subscriptions(query)
+    elif service_type == "transfers":
+        await show_transfers(query)
+    elif service_type == "crypto":
+        await show_crypto(query)
+
+async def show_subscriptions(query):
+    """Показать подписки"""
+    subscriptions_text = """
+🎬 Подписки
+
+Выберите сервис:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("Netflix", callback_data="order_netflix")],
+        [InlineKeyboardButton("Steam", callback_data="order_steam")],
+        [InlineKeyboardButton("Discord", callback_data="order_discord")],
+        [InlineKeyboardButton("Spotify", callback_data="order_spotify")],
+        [InlineKeyboardButton("YouTube Premium", callback_data="order_youtube")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(subscriptions_text, reply_markup=reply_markup)
+
+async def show_transfers(query):
+    """Показать переводы"""
+    transfers_text = """
+💳 Переводы
+
+Выберите тип перевода:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("🇪🇺 Европейские карты", callback_data="order_transfer_eu")],
+        [InlineKeyboardButton("🇺🇸 Американские карты", callback_data="order_transfer_us")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(transfers_text, reply_markup=reply_markup)
+
+async def show_crypto(query):
+    """Показать криптовалюты"""
+    crypto_text = """
+₿ Криптовалюты
+
+Выберите валюту:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("Bitcoin (BTC)", callback_data="order_crypto_btc")],
+        [InlineKeyboardButton("Ethereum (ETH)", callback_data="order_crypto_eth")],
+        [InlineKeyboardButton("USDT", callback_data="order_crypto_usdt")],
+        [InlineKeyboardButton("Solana (SOL)", callback_data="order_crypto_sol")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(crypto_text, reply_markup=reply_markup)
+
+async def handle_back_button(query, data):
+    """Обработка кнопки назад"""
+    if data == "back_main":
+        await start_command(query, None)
+    elif data == "back_catalog":
+        await show_catalog(query)
+
+# Flask маршруты
+@app.route('/')
+def home():
+    """Главная страница"""
+    return jsonify({
+        'status': 'online',
+        'bot': 'Telegram Financial Bot',
+        'version': '1.0.0',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@app.route('/health')
+def health():
+    """Health check для Render"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@app.route('/stats')
+def stats():
+    """Статистика бота"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        # Количество пользователей
+        cursor.execute('SELECT COUNT(*) FROM wallets')
+        users_count = cursor.fetchone()[0]
+        
+        # Количество заказов
+        cursor.execute('SELECT COUNT(*) FROM orders')
+        orders_count = cursor.fetchone()[0]
+        
+        # Общая сумма заказов
+        cursor.execute('SELECT SUM(amount) FROM orders')
+        total_amount = cursor.fetchone()[0] or 0
+        
+        conn.close()
+        
+        return jsonify({
+            'users_count': users_count,
+            'orders_count': orders_count,
+            'total_amount': total_amount,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# API для администраторов
+@app.route('/admin/orders', methods=['GET'])
+def get_orders():
+    """Получить все заказы"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT o.id, o.user_id, o.service_type, o.amount, o.status, o.created_at,
+                   w.balance
+            FROM orders o
+            LEFT JOIN wallets w ON o.user_id = w.user_id
+            ORDER BY o.created_at DESC
+        ''')
+        
+        orders = cursor.fetchall()
+        conn.close()
+        
+        orders_list = []
+        for order in orders:
+            orders_list.append({
+                'id': order[0],
+                'user_id': order[1],
+                'service_type': order[2],
+                'amount': order[3],
+                'status': order[4],
+                'created_at': order[5],
+                'user_balance': order[6] or 0
+            })
+        
+        return jsonify(orders_list)
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/admin/order/<int:order_id>', methods=['GET'])
+def get_order(order_id):
+    """Получить конкретный заказ"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT o.*, w.balance
+            FROM orders o
+            LEFT JOIN wallets w ON o.user_id = w.user_id
+            WHERE o.id = ?
+        ''', (order_id,))
+        
+        order = cursor.fetchone()
+        conn.close()
+        
+        if order:
+            return jsonify({
+                'id': order[0],
+                'user_id': order[1],
+                'service_type': order[2],
+                'amount': order[3],
+                'status': order[4],
+                'description': order[5],
+                'created_at': order[6],
+                'updated_at': order[7],
+                'user_balance': order[8] or 0
+            })
+        else:
+            return jsonify({'error': 'Заказ не найден'}), 404
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/admin/order/<int:order_id>/status', methods=['POST'])
+def update_order_status(order_id):
+    """Обновить статус заказа"""
+    try:
+        data = request.get_json()
+        new_status = data.get('status')
+        notes = data.get('notes', '')
+        admin_id = data.get('admin_id')
+        
+        if not new_status:
+            return jsonify({'error': 'Статус обязателен'}), 400
+        
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        # Обновляем статус заказа
+        cursor.execute('''
+            UPDATE orders 
+            SET status = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''', (new_status, order_id))
+        
+        # Добавляем в историю
+        cursor.execute('''
+            INSERT INTO order_status_history (order_id, status, admin_id, notes)
+            VALUES (?, ?, ?, ?)
+        ''', (order_id, new_status, admin_id, notes))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'message': 'Статус обновлен'})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/admin/wallet/<int:user_id>', methods=['GET'])
+def get_wallet_info(user_id):
+    """Получить информацию о кошельке"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT w.balance, w.created_at,
+                   COUNT(t.id) as transactions_count
+            FROM wallets w
+            LEFT JOIN wallet_transactions t ON w.user_id = t.user_id
+            WHERE w.user_id = ?
+            GROUP BY w.user_id
+        ''', (user_id,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return jsonify({
+                'user_id': user_id,
+                'balance': result[0],
+                'created_at': result[1],
+                'transactions_count': result[2]
+            })
+        else:
+            return jsonify({'error': 'Кошелек не найден'}), 404
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/admin/wallet/<int:user_id>/deposit', methods=['POST'])
+def deposit_wallet(user_id):
+    """Пополнить кошелек"""
+    try:
+        data = request.get_json()
+        amount = data.get('amount')
+        admin_id = data.get('admin_id')
+        
+        if not amount or amount <= 0:
+            return jsonify({'error': 'Сумма должна быть больше 0'}), 400
+        
+        success = update_wallet_balance(user_id, amount, 'deposit', f'Пополнение администратором {admin_id}')
+        
+        if success:
+            return jsonify({'success': True, 'message': 'Кошелек пополнен'})
+        else:
+            return jsonify({'error': 'Ошибка пополнения'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/admin/wallet/<int:user_id>/withdraw', methods=['POST'])
+def withdraw_wallet(user_id):
+    """Вывести средства из кошелька"""
+    try:
+        data = request.get_json()
+        amount = data.get('amount')
+        admin_id = data.get('admin_id')
+        
+        if not amount or amount <= 0:
+            return jsonify({'error': 'Сумма должна быть больше 0'}), 400
+        
+        # Проверяем баланс
+        current_balance = get_user_wallet(user_id)
+        if current_balance < amount:
+            return jsonify({'error': 'Недостаточно средств'}), 400
+        
+        success = update_wallet_balance(user_id, -amount, 'withdraw', f'Вывод администратором {admin_id}')
+        
+        if success:
+            return jsonify({'success': True, 'message': 'Средства выведены'})
+        else:
+            return jsonify({'error': 'Ошибка вывода'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# Основная функция запуска
+def main():
+    """Основная функция запуска"""
+    if not TELEGRAM_BOT_TOKEN:
+        print("❌ TELEGRAM_BOT_TOKEN не установлен!")
+        print("Установите переменную окружения TELEGRAM_BOT_TOKEN")
+        sys.exit(1)
+    
+    if not ADMIN_ID:
+        print("❌ ADMIN_ID не установлен!")
+        print("Установите переменную окружения ADMIN_ID")
+        sys.exit(1)
+    
+    print("🚀 Запуск Telegram Financial Bot...")
+    print(f"📊 Порт: {PORT}")
+    print(f"👤 Администратор: {ADMIN_ID}")
+    
+    # Создаем приложение
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Добавляем обработчики
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Запускаем Flask в отдельном потоке
+    def run_flask():
+        app.run(host='0.0.0.0', port=PORT, debug=False)
+    
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    print(f"🌐 Flask сервер запущен на порту {PORT}")
+    print("🤖 Бот запущен и готов к работе!")
+    
+    # Запускаем бота
+    try:
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except KeyboardInterrupt:
+        print("\n🛑 Бот остановлен")
+    except Exception as e:
+        print(f"❌ Ошибка запуска бота: {e}")
 
 if __name__ == '__main__':
     main()
-

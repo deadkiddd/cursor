@@ -253,6 +253,26 @@ def update_wallet_balance(user_id, amount, transaction_type, description):
         logger.error(f"Ошибка обновления кошелька: {e}")
         return False
 
+def add_money_to_wallet(user_id, amount, description):
+    """Добавить деньги в кошелек пользователя"""
+    try:
+        # Создаем кошелек, если его нет
+        get_or_create_wallet(user_id)
+        
+        # Обновляем баланс
+        success = update_wallet_balance(user_id, amount, 'deposit', description)
+        
+        if success:
+            logger.info(f"Кошелек пользователя {user_id} пополнен на {amount} USD")
+            return True
+        else:
+            logger.error(f"Ошибка пополнения кошелька пользователя {user_id}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Ошибка add_money_to_wallet: {e}")
+        return False
+
 def create_order(user_id, service_type, amount, description):
     """Создать новый заказ"""
     try:
@@ -310,7 +330,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("❓ Помощь", callback_data="help")]
     ]
     
-    if user_id in [ADMIN_ID, ADMIN_ID_2]:
+    if user_id in ADMIN_IDS:
         keyboard.append([InlineKeyboardButton("🔧 Админ панель", callback_data="admin")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -493,6 +513,7 @@ async def show_catalog(query):
     keyboard = [
         [InlineKeyboardButton("🎬 Подписки", callback_data="service_subscriptions")],
         [InlineKeyboardButton("💳 Переводы", callback_data="service_transfers")],
+        [InlineKeyboardButton("🔧 Другие сервисы", callback_data="service_other_services")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_main")]
     ]
     
@@ -621,6 +642,8 @@ async def handle_service_selection(query, data):
         await show_transfers(query)
     elif service_type == "crypto":
         await show_crypto(query)
+    elif service_type == "other_services":
+        await show_other_services(query)
 
 async def show_subscriptions(query):
     """Показать подписки"""
@@ -676,6 +699,22 @@ async def show_crypto(query):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(crypto_text, reply_markup=reply_markup)
+
+async def show_other_services(query):
+    """Показать другие сервисы"""
+    other_services_text = """
+🔧 Оплата других сервисов
+
+Выберите услугу:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("🔧 Другие сервисы", callback_data="order_other_services")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(other_services_text, reply_markup=reply_markup)
 
 async def handle_back_button(query, data):
     """Обработка кнопки назад"""
@@ -1067,6 +1106,12 @@ def get_service_info(service_type):
             'name': 'Solana (SOL)',
             'description': 'Покупка/продажа Solana',
             'min_amount': 5,
+            'commission': 0.08
+        },
+        'other_services': {
+            'name': 'Оплата других сервисов',
+            'description': 'Оплата любых других сервисов и услуг',
+            'min_amount': 10,
             'commission': 0.08
         }
     }

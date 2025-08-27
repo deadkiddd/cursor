@@ -78,10 +78,10 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
 ADMIN_ID_2 = int(os.getenv('ADMIN_ID_2', 0))
-# Список администраторов (вы первый, новый админ второй)
-ADMIN_IDS = [990043534, 1100063554, ADMIN_ID, ADMIN_ID_2]  # Вы первый, новый админ второй
-OPERATOR_USERNAME = "@swiwell"
-OPERATOR_USERNAME_2 = "@realdealkid"
+# Список администраторов
+ADMIN_IDS = [ADMIN_ID, ADMIN_ID_2]  # Основные администраторы
+OPERATOR_USERNAME = "@myspacehelper"
+OPERATOR_USERNAME_2 = "@myspacehelper"
 PORT = int(os.getenv('PORT', 10000))
 
 # Проверка переменных окружения
@@ -356,7 +356,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = get_user_wallet(user_id)
     
     welcome_text = f"""
-🤖 Добро пожаловать в Финансовый Бот!
+🤖 Добро пожаловать в SPACE PAY!
 
 👤 Пользователь: {user.first_name}
 💰 Баланс кошелька: {balance:.2f} USD
@@ -393,19 +393,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /check_payment - Проверить платеж (админы)
 
 💳 Доступные услуги:
-• Netflix, Steam, Discord
-• Spotify, YouTube Premium
+• Подписки на сервисы
 • Переводы на карты
-• Криптовалюты (ETH, USDT, SOL)
+• Другие услуги
 
 💰 Оплата:
 • Внутренний кошелек
+• Банковские карты
 • Криптовалюты
-• Переводы
 
 📞 Поддержка:
-• Основной оператор: @swiwell
-• Техподдержка: @Deadkid
+• Оператор: @myspacehelper
 """
     
     await update.message.reply_text(help_text)
@@ -494,7 +492,7 @@ async def add_money_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bot = Bot(token=TELEGRAM_BOT_TOKEN)
                 await bot.send_message(
                     chat_id=target_user_id,
-                    text=f"💰 **Кошелек пополнен!**\n\n💵 Сумма: {amount:.2f} USD\n👤 Администратор: {user_id}\n\n🎉 Ваш баланс обновлен!"
+                    text=f"💰 **Кошелек пополнен!**\n\n💵 Сумма: {amount:.2f} USD\n\n🎉 Ваш баланс обновлен!"
                 )
             except Exception as e:
                 logger.error(f"Ошибка уведомления пользователя: {e}")
@@ -552,8 +550,6 @@ async def show_catalog(query):
 """
     
     keyboard = [
-        [InlineKeyboardButton("🎬 Подписки", callback_data="service_subscriptions")],
-        [InlineKeyboardButton("💳 Переводы", callback_data="service_transfers")],
         [InlineKeyboardButton("🔧 Другие сервисы", callback_data="service_other_services")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_main")]
     ]
@@ -636,19 +632,17 @@ async def show_help(query):
 /help - Эта справка
 
 💳 Доступные услуги:
-• Netflix, Steam, Discord
-• Spotify, YouTube Premium
+• Подписки на сервисы
 • Переводы на карты
-• Криптовалюты (BTC, ETH, USDT)
+• Другие услуги
 
 💰 Оплата:
 • Внутренний кошелек
+• Банковские карты
 • Криптовалюты
-• Переводы
 
 📞 Поддержка:
-• Основной оператор: @swiwell
-• Техподдержка: @Deadkid
+• Оператор: @myspacehelper
 """
     
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_main")]]
@@ -698,8 +692,6 @@ async def show_subscriptions(query):
         [InlineKeyboardButton("Netflix", callback_data="order_netflix")],
         [InlineKeyboardButton("Steam", callback_data="order_steam")],
         [InlineKeyboardButton("Discord", callback_data="order_discord")],
-        [InlineKeyboardButton("Spotify", callback_data="order_spotify")],
-        [InlineKeyboardButton("YouTube Premium", callback_data="order_youtube")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
     ]
     
@@ -715,8 +707,7 @@ async def show_transfers(query):
 """
     
     keyboard = [
-        [InlineKeyboardButton("🇪🇺 Европейские карты", callback_data="order_transfer_eu")],
-        [InlineKeyboardButton("🇺🇸 Американские карты", callback_data="order_transfer_us")],
+        [InlineKeyboardButton("💳 Переводы", callback_data="order_transfer")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
     ]
     
@@ -774,7 +765,7 @@ async def show_main_menu(query):
     balance = get_user_wallet(user_id)
     
     welcome_text = f"""
-🤖 Добро пожаловать в Финансовый Бот!
+🤖 Добро пожаловать в SPACE PAY!
 
 👤 Пользователь: {user.first_name}
 💰 Баланс кошелька: {balance:.2f} USD
@@ -994,7 +985,7 @@ async def handle_crypto_deposit_selection(query, data):
 • Отправьте точную сумму: {crypto_amount:.6f} {currency.upper()}
 • Укажите в комментарии: {user_id}
 • После оплаты баланс пополнится автоматически
-• При проблемах обращайтесь к @swiwell
+• При проблемах обращайтесь к @myspacehelper
 
 ⏰ Ожидайте подтверждения платежа...
         """
@@ -1624,7 +1615,7 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
 ⚠️ **Важно:**
 • Укажите в комментарии: {user_id}
 • После оплаты баланс пополнится в течение 10 минут
-• При проблемах обращайтесь к @swiwell
+• При проблемах обращайтесь к @myspacehelper
 
 ⏰ Ожидайте подтверждения платежа...
             """
@@ -2126,3 +2117,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

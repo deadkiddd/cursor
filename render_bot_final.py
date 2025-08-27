@@ -15,6 +15,7 @@ import sys
 import sqlite3
 from decimal import Decimal, ROUND_HALF_UP
 
+# первый етст коммит
 # Загружаем переменные окружения из .env файла
 try:
     from dotenv import load_dotenv

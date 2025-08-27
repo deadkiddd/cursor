@@ -77,18 +77,15 @@ logger = logging.getLogger(__name__)
 # Переменные окружения
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
-ADMIN_ID_2 = int(os.getenv('ADMIN_ID_2', 0))
 # Список администраторов
-ADMIN_IDS = [ADMIN_ID, ADMIN_ID_2]  # Основные администраторы
+ADMIN_IDS = [ADMIN_ID]  # Один администратор
 OPERATOR_USERNAME = "@myspacehelper"
-OPERATOR_USERNAME_2 = "@myspacehelper"
 PORT = int(os.getenv('PORT', 10000))
 
 # Проверка переменных окружения
 print("🔍 Проверка переменных окружения:")
 print(f"TELEGRAM_BOT_TOKEN: {'✅ Установлен' if TELEGRAM_BOT_TOKEN else '❌ НЕ УСТАНОВЛЕН'}")
 print(f"ADMIN_ID: {ADMIN_ID if ADMIN_ID else '❌ НЕ УСТАНОВЛЕН'}")
-print(f"ADMIN_ID_2: {ADMIN_ID_2 if ADMIN_ID_2 else '❌ НЕ УСТАНОВЛЕН'}")
 print(f"PORT: {PORT}")
 
 # Настройки безопасности
@@ -121,7 +118,9 @@ COMMISSION_RATES = {
     'crypto_eth': 0.08,
     'crypto_usdt': 0.08,
     'crypto_sol': 0.08,
-    'bybit_transfer': 0.08
+    'bybit_transfer': 0.08,
+    'gpt': 0.08,
+    'twitter': 0.08
 }
 
 # Минимальные суммы
@@ -550,6 +549,8 @@ async def show_catalog(query):
 """
     
     keyboard = [
+        [InlineKeyboardButton("🤖 GPT", callback_data="service_gpt")],
+        [InlineKeyboardButton("🐦 Twitter/X", callback_data="service_twitter")],
         [InlineKeyboardButton("🔧 Другие сервисы", callback_data="service_other_services")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_main")]
     ]
@@ -677,6 +678,10 @@ async def handle_service_selection(query, data):
         await show_transfers(query)
     elif service_type == "crypto":
         await show_crypto(query)
+    elif service_type == "gpt":
+        await show_gpt_services(query)
+    elif service_type == "twitter":
+        await show_twitter_services(query)
     elif service_type == "other_services":
         await show_other_services(query)
 
@@ -747,6 +752,38 @@ async def show_other_services(query):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(other_services_text, reply_markup=reply_markup)
+
+async def show_gpt_services(query):
+    """Показать услуги GPT"""
+    gpt_services_text = """
+🤖 GPT сервисы
+
+Выберите услугу:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("🤖 GPT", callback_data="order_gpt")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(gpt_services_text, reply_markup=reply_markup)
+
+async def show_twitter_services(query):
+    """Показать услуги Twitter/X"""
+    twitter_services_text = """
+🐦 Twitter/X сервисы
+
+Выберите услугу:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("🐦 Twitter/X", callback_data="order_twitter")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(twitter_services_text, reply_markup=reply_markup)
 
 async def handle_back_button(query, data):
     """Обработка кнопки назад"""
@@ -1138,6 +1175,18 @@ def get_service_info(service_type):
             'name': 'Solana (SOL)',
             'description': 'Покупка/продажа Solana',
             'min_amount': 5,
+            'commission': 0.08
+        },
+        'gpt': {
+            'name': 'GPT',
+            'description': 'Подписки на GPT сервисы (ChatGPT Plus, Pro, API)',
+            'min_amount': 20,
+            'commission': 0.08
+        },
+        'twitter': {
+            'name': 'Twitter/X',
+            'description': 'Подписки на Twitter/X (Blue, Premium, Verified)',
+            'min_amount': 8,
             'commission': 0.08
         },
         'other_services': {

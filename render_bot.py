@@ -77,18 +77,15 @@ logger = logging.getLogger(__name__)
 # Переменные окружения
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
-ADMIN_ID_2 = int(os.getenv('ADMIN_ID_2', 0))
-# Список администраторов (вы первый, новый админ второй)
-ADMIN_IDS = [990043534, 1100063554, ADMIN_ID, ADMIN_ID_2]  # Вы первый, новый админ второй
-OPERATOR_USERNAME = "@swiwell"
-OPERATOR_USERNAME_2 = "@realdealkid"
+# Список администраторов
+ADMIN_IDS = [ADMIN_ID]  # Один администратор
+OPERATOR_USERNAME = "@myspacehelper"
 PORT = int(os.getenv('PORT', 10000))
 
 # Проверка переменных окружения
 print("🔍 Проверка переменных окружения:")
 print(f"TELEGRAM_BOT_TOKEN: {'✅ Установлен' if TELEGRAM_BOT_TOKEN else '❌ НЕ УСТАНОВЛЕН'}")
 print(f"ADMIN_ID: {ADMIN_ID if ADMIN_ID else '❌ НЕ УСТАНОВЛЕН'}")
-print(f"ADMIN_ID_2: {ADMIN_ID_2 if ADMIN_ID_2 else '❌ НЕ УСТАНОВЛЕН'}")
 print(f"PORT: {PORT}")
 
 # Настройки безопасности
@@ -121,7 +118,9 @@ COMMISSION_RATES = {
     'crypto_eth': 0.08,
     'crypto_usdt': 0.08,
     'crypto_sol': 0.08,
-    'bybit_transfer': 0.08
+    'bybit_transfer': 0.08,
+    'gpt': 0.08,
+    'twitter': 0.08
 }
 
 # Минимальные суммы
@@ -356,7 +355,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = get_user_wallet(user_id)
     
     welcome_text = f"""
-🤖 Добро пожаловать в Финансовый Бот!
+🤖 Добро пожаловать в SPACE PAY!
 
 👤 Пользователь: {user.first_name}
 💰 Баланс кошелька: {balance:.2f} USD
@@ -393,19 +392,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /check_payment - Проверить платеж (админы)
 
 💳 Доступные услуги:
-• Netflix, Steam, Discord
-• Spotify, YouTube Premium
+• Подписки на сервисы
 • Переводы на карты
-• Криптовалюты (ETH, USDT, SOL)
+• Другие услуги
 
 💰 Оплата:
 • Внутренний кошелек
+• Банковские карты
 • Криптовалюты
-• Переводы
 
 📞 Поддержка:
-• Основной оператор: @swiwell
-• Техподдержка: @Deadkid
+• Оператор: @myspacehelper
 """
     
     await update.message.reply_text(help_text)
@@ -494,7 +491,7 @@ async def add_money_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bot = Bot(token=TELEGRAM_BOT_TOKEN)
                 await bot.send_message(
                     chat_id=target_user_id,
-                    text=f"💰 **Кошелек пополнен!**\n\n💵 Сумма: {amount:.2f} USD\n👤 Администратор: {user_id}\n\n🎉 Ваш баланс обновлен!"
+                    text=f"💰 **Кошелек пополнен!**\n\n💵 Сумма: {amount:.2f} USD\n\n🎉 Ваш баланс обновлен!"
                 )
             except Exception as e:
                 logger.error(f"Ошибка уведомления пользователя: {e}")
@@ -552,8 +549,8 @@ async def show_catalog(query):
 """
     
     keyboard = [
-        [InlineKeyboardButton("🎬 Подписки", callback_data="service_subscriptions")],
-        [InlineKeyboardButton("💳 Переводы", callback_data="service_transfers")],
+        [InlineKeyboardButton("🤖 GPT", callback_data="service_gpt")],
+        [InlineKeyboardButton("🐦 Twitter/X", callback_data="service_twitter")],
         [InlineKeyboardButton("🔧 Другие сервисы", callback_data="service_other_services")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_main")]
     ]
@@ -636,19 +633,17 @@ async def show_help(query):
 /help - Эта справка
 
 💳 Доступные услуги:
-• Netflix, Steam, Discord
-• Spotify, YouTube Premium
+• Подписки на сервисы
 • Переводы на карты
-• Криптовалюты (BTC, ETH, USDT)
+• Другие услуги
 
 💰 Оплата:
 • Внутренний кошелек
+• Банковские карты
 • Криптовалюты
-• Переводы
 
 📞 Поддержка:
-• Основной оператор: @swiwell
-• Техподдержка: @Deadkid
+• Оператор: @myspacehelper
 """
     
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_main")]]
@@ -683,6 +678,10 @@ async def handle_service_selection(query, data):
         await show_transfers(query)
     elif service_type == "crypto":
         await show_crypto(query)
+    elif service_type == "gpt":
+        await show_gpt_services(query)
+    elif service_type == "twitter":
+        await show_twitter_services(query)
     elif service_type == "other_services":
         await show_other_services(query)
 
@@ -698,8 +697,6 @@ async def show_subscriptions(query):
         [InlineKeyboardButton("Netflix", callback_data="order_netflix")],
         [InlineKeyboardButton("Steam", callback_data="order_steam")],
         [InlineKeyboardButton("Discord", callback_data="order_discord")],
-        [InlineKeyboardButton("Spotify", callback_data="order_spotify")],
-        [InlineKeyboardButton("YouTube Premium", callback_data="order_youtube")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
     ]
     
@@ -715,8 +712,7 @@ async def show_transfers(query):
 """
     
     keyboard = [
-        [InlineKeyboardButton("🇪🇺 Европейские карты", callback_data="order_transfer_eu")],
-        [InlineKeyboardButton("🇺🇸 Американские карты", callback_data="order_transfer_us")],
+        [InlineKeyboardButton("💳 Переводы", callback_data="order_transfer")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
     ]
     
@@ -757,6 +753,38 @@ async def show_other_services(query):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(other_services_text, reply_markup=reply_markup)
 
+async def show_gpt_services(query):
+    """Показать услуги GPT"""
+    gpt_services_text = """
+🤖 GPT сервисы
+
+Выберите услугу:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("🤖 GPT", callback_data="order_gpt")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(gpt_services_text, reply_markup=reply_markup)
+
+async def show_twitter_services(query):
+    """Показать услуги Twitter/X"""
+    twitter_services_text = """
+🐦 Twitter/X сервисы
+
+Выберите услугу:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("🐦 Twitter/X", callback_data="order_twitter")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(twitter_services_text, reply_markup=reply_markup)
+
 async def handle_back_button(query, data):
     """Обработка кнопки назад"""
     if data == "back_main":
@@ -774,7 +802,7 @@ async def show_main_menu(query):
     balance = get_user_wallet(user_id)
     
     welcome_text = f"""
-🤖 Добро пожаловать в Финансовый Бот!
+🤖 Добро пожаловать в SPACE PAY!
 
 👤 Пользователь: {user.first_name}
 💰 Баланс кошелька: {balance:.2f} USD
@@ -994,7 +1022,7 @@ async def handle_crypto_deposit_selection(query, data):
 • Отправьте точную сумму: {crypto_amount:.6f} {currency.upper()}
 • Укажите в комментарии: {user_id}
 • После оплаты баланс пополнится автоматически
-• При проблемах обращайтесь к @swiwell
+• При проблемах обращайтесь к @myspacehelper
 
 ⏰ Ожидайте подтверждения платежа...
         """
@@ -1147,6 +1175,18 @@ def get_service_info(service_type):
             'name': 'Solana (SOL)',
             'description': 'Покупка/продажа Solana',
             'min_amount': 5,
+            'commission': 0.08
+        },
+        'gpt': {
+            'name': 'GPT',
+            'description': 'Подписки на GPT сервисы (ChatGPT Plus, Pro, API)',
+            'min_amount': 20,
+            'commission': 0.08
+        },
+        'twitter': {
+            'name': 'Twitter/X',
+            'description': 'Подписки на Twitter/X (Blue, Premium, Verified)',
+            'min_amount': 8,
             'commission': 0.08
         },
         'other_services': {
@@ -1624,7 +1664,7 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
 ⚠️ **Важно:**
 • Укажите в комментарии: {user_id}
 • После оплаты баланс пополнится в течение 10 минут
-• При проблемах обращайтесь к @swiwell
+• При проблемах обращайтесь к @myspacehelper
 
 ⏰ Ожидайте подтверждения платежа...
             """
@@ -2126,3 +2166,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

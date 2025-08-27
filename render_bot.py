@@ -13,19 +13,14 @@ import tempfile
 import sys
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-from telegram.error import Conflict, NetworkError, TimedOut
 from flask import Flask, request, jsonify
-import threading
-import time
-from datetime import datetime, timedelta
-import json
-import re
+from datetime import datetime
 import signal
 import sqlite3
-from decimal import Decimal, ROUND_HALF_UP
 import threading
-import time
-from crypto_checker_simple import SimpleCryptoChecker, auto_issue_card
+from crypto_checker import auto_issue_card
+from supabase import create_client, Client
+
 
 # Проверка на множественные экземпляры
 def check_single_instance():
@@ -133,6 +128,12 @@ MIN_AMOUNTS = {
 # Создаем Flask приложение
 app = Flask(__name__)
 
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_API_SECRET = os.getenv("SUPABASE_API_SECRET")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_API_SECRET)
+
+
 # Инициализация базы данных
 def init_database():
     """Инициализация базы данных"""
@@ -203,142 +204,126 @@ init_database()
 
 # Функции для работы с базой данных
 def get_user_wallet(user_id):
-    """Получить кошелек пользователя"""
+    """Получить кошелек пользователя через Supabase"""
     try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
-        # Создаем кошелек если не существует
-        cursor.execute('''
-            INSERT OR IGNORE INTO wallets (user_id, balance)
-            VALUES (?, 0.0)
-        ''', (user_id,))
-        
-        cursor.execute('SELECT balance FROM wallets WHERE user_id = ?', (user_id,))
-        result = cursor.fetchone()
-        conn.commit()
-        conn.close()
-        
-        return result[0] if result else 0.0
-        
+        # Создаем кошелек, если его нет
+        existing = supabase.table("wallets").select("balance").eq("user_id", user_id).execute()
+        if existing.data:
+            return float(existing.data[0]["balance"])
+        else:
+            supabase.table("wallets").insert({"user_id": user_id, "balance": 0.0}).execute()
+            return 0.0
     except Exception as e:
         logger.error(f"Ошибка получения кошелька: {e}")
         return 0.0
 
+
 def get_or_create_wallet(user_id, username=None, first_name=None):
-    """Получить или создать кошелек пользователя"""
+    """Получить или создать кошелек пользователя через Supabase"""
     try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
-        # Проверяем существование кошелька
-        cursor.execute('SELECT * FROM wallets WHERE user_id = ?', (user_id,))
-        wallet = cursor.fetchone()
-        
-        if wallet:
+        wallet = supabase.table("wallets").select("*").eq("user_id", user_id).execute()
+        if wallet.data:
+            w = wallet.data[0]
             return {
-                'user_id': wallet[0],
-                'username': wallet[1],
-                'first_name': wallet[2],
-                'balance': float(wallet[3]),
-                'created_at': wallet[4],
-                'updated_at': wallet[5]
+                "user_id": w["user_id"],
+                "username": w.get("username"),
+                "first_name": w.get("first_name"),
+                "balance": float(w.get("balance", 0.0)),
+                "created_at": w.get("created_at"),
+                "updated_at": w.get("updated_at")
             }
         else:
-            # Создаем новый кошелек
-            cursor.execute('''
-                INSERT INTO wallets (user_id, username, first_name, balance)
-                VALUES (?, ?, ?, 0.00)
-            ''', (user_id, username, first_name))
-            conn.commit()
-            
+            now_iso = datetime.now().isoformat()
+            supabase.table("wallets").insert({
+                "user_id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "balance": 0.0,
+                "created_at": now_iso,
+                "updated_at": now_iso
+            }).execute()
             return {
-                'user_id': user_id,
-                'username': username,
-                'first_name': first_name,
-                'balance': 0.00,
-                'created_at': datetime.now().isoformat(),
-                'updated_at': datetime.now().isoformat()
+                "user_id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "balance": 0.0,
+                "created_at": now_iso,
+                "updated_at": now_iso
             }
     except Exception as e:
-        logger.error(f"Ошибка получения/создания кошелька: {e}")
+        logger.error(f"Ошибка get_or_create_wallet: {e}")
         return None
-    finally:
-        conn.close()
+
 
 def update_wallet_balance(user_id, amount, transaction_type, description):
-    """Обновить баланс кошелька"""
+    """Обновить баланс кошелька через Supabase"""
     try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
         # Обновляем баланс
-        cursor.execute('''
-            UPDATE wallets 
-            SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-        ''', (amount, user_id))
-        
+        supabase.table("wallets").update({
+            "balance": f"balance + {amount}",
+            "updated_at": datetime.now().isoformat()
+        }).eq("user_id", user_id).execute()
+
         # Добавляем транзакцию
-        cursor.execute('''
-            INSERT INTO wallet_transactions (user_id, amount, transaction_type, description)
-            VALUES (?, ?, ?, ?)
-        ''', (user_id, amount, transaction_type, description))
-        
-        conn.commit()
-        conn.close()
+        supabase.table("wallet_transactions").insert({
+            "user_id": user_id,
+            "amount": amount,
+            "transaction_type": transaction_type,
+            "description": description,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+
         return True
-        
     except Exception as e:
         logger.error(f"Ошибка обновления кошелька: {e}")
         return False
 
+
 def add_money_to_wallet(user_id, amount, description):
-    """Добавить деньги в кошелек пользователя"""
+    """Добавить деньги в кошелек пользователя через Supabase"""
     try:
         # Создаем кошелек, если его нет
         get_or_create_wallet(user_id)
-        
+
         # Обновляем баланс
         success = update_wallet_balance(user_id, amount, 'deposit', description)
-        
+
         if success:
             logger.info(f"Кошелек пользователя {user_id} пополнен на {amount} USD")
             return True
         else:
             logger.error(f"Ошибка пополнения кошелька пользователя {user_id}")
             return False
-            
     except Exception as e:
         logger.error(f"Ошибка add_money_to_wallet: {e}")
         return False
 
+
 def create_order(user_id, service_type, amount, description):
-    """Создать новый заказ"""
+    """Создать новый заказ через Supabase"""
     try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO orders (user_id, service_type, amount, description)
-            VALUES (?, ?, ?, ?)
-        ''', (user_id, service_type, amount, description))
-        
-        order_id = cursor.lastrowid
-        
-        # Добавляем начальный статус
-        cursor.execute('''
-            INSERT INTO order_status_history (order_id, status, notes)
-            VALUES (?, 'pending', 'Заказ создан')
-        ''', (order_id,))
-        
-        conn.commit()
-        conn.close()
+        order_resp = supabase.table("orders").insert({
+            "user_id": user_id,
+            "service_type": service_type,
+            "amount": amount,
+            "status": "pending",
+            "description": description,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }).execute()
+        order_id = order_resp.data[0]["id"]
+
+        supabase.table("order_status_history").insert({
+            "order_id": order_id,
+            "status": "pending",
+            "notes": "Заказ создан",
+            "created_at": datetime.now().isoformat()
+        }).execute()
         return order_id
-        
     except Exception as e:
         logger.error(f"Ошибка создания заказа: {e}")
         return None
+
 
 # Основные команды бота
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -407,59 +392,60 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(help_text)
 
+
 async def check_payment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для проверки платежа (только для админов)"""
+    """Команда для проверки платежа (только для админов) через Supabase"""
     user_id = update.effective_user.id
-    
+
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("❌ У вас нет прав для использования этой команды")
         return
-    
+
     if not context.args:
         await update.message.reply_text("❌ Укажите ID заказа\nПример: /check_payment 123")
         return
-    
+
     try:
         order_id = int(context.args[0])
-        
-        # Получаем информацию о заказе
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT user_id, service_type, amount, status, description 
-            FROM orders 
-            WHERE id = ?
-        ''', (order_id,))
-        
-        order = cursor.fetchone()
-        conn.close()
-        
-        if not order:
+
+        # Получаем информацию о заказе через Supabase
+        order_resp = supabase.table("orders")\
+            .select("user_id, service_type, amount, status, description")\
+            .eq("id", order_id)\
+            .execute()
+
+        if not order_resp.data:
             await update.message.reply_text(f"❌ Заказ {order_id} не найден")
             return
-        
-        user_id_order, service_type, amount, status, description = order
-        
+
+        order = order_resp.data[0]
+        user_id_order = order["user_id"]
+        service_type = order["service_type"]
+        amount = order["amount"]
+        status = order["status"]
+        description = order["description"]
+
         if not service_type.startswith('deposit_crypto_'):
             await update.message.reply_text("❌ Этот заказ не является криптопополнением")
             return
-        
+
         currency = service_type.replace('deposit_crypto_', '')
-        
+
         # Запускаем проверку платежа
         await update.message.reply_text(f"🔍 Проверяю платеж для заказа {order_id}...")
-        
-        # Создаем задачу для проверки
+
+        # Создаем задачу для фоновой проверки
         asyncio.create_task(check_payment_background(order_id, currency, amount, user_id_order))
-        
+
         await update.message.reply_text(f"✅ Проверка платежа запущена для заказа {order_id}")
-        
+
     except ValueError:
         await update.message.reply_text("❌ Неверный формат ID заказа")
     except Exception as e:
         logger.error(f"Ошибка проверки платежа: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
+
+
 
 async def add_money_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для ручного пополнения кошелька (только для админов)"""
@@ -580,45 +566,35 @@ async def show_wallet(query):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(wallet_text, reply_markup=reply_markup)
 
+
 async def show_orders(query):
-    """Показать заказы пользователя"""
+    """Показать заказы пользователя через Supabase"""
     user_id = query.from_user.id
-    
     try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT id, service_type, amount, status, created_at 
-            FROM orders 
-            WHERE user_id = ? 
-            ORDER BY created_at DESC 
-            LIMIT 10
-        ''', (user_id,))
-        
-        orders = cursor.fetchall()
-        conn.close()
-        
+        orders = supabase.table("orders")\
+            .select("id, service_type, amount, status, created_at")\
+            .eq("user_id", user_id)\
+            .order("created_at", desc=True)\
+            .limit(10).execute().data
+
         if orders:
             orders_text = "📋 Ваши заказы:\n\n"
-            for order in orders:
-                order_id, service_type, amount, status, created_at = order
-                orders_text += f"🔹 Заказ #{order_id}\n"
-                orders_text += f"   Услуга: {service_type}\n"
-                orders_text += f"   Сумма: {amount:.2f} USD\n"
-                orders_text += f"   Статус: {status}\n"
-                orders_text += f"   Дата: {created_at}\n\n"
+            for o in orders:
+                orders_text += f"🔹 Заказ #{o['id']}\n"
+                orders_text += f"   Услуга: {o['service_type']}\n"
+                orders_text += f"   Сумма: {o['amount']:.2f} USD\n"
+                orders_text += f"   Статус: {o['status']}\n"
+                orders_text += f"   Дата: {o['created_at']}\n\n"
         else:
             orders_text = "📋 У вас пока нет заказов"
-        
+
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_main")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await query.edit_message_text(orders_text, reply_markup=reply_markup)
-        
     except Exception as e:
-        logger.error(f"Ошибка получения заказов: {e}")
+        logger.error(f"Ошибка show_orders: {e}")
         await query.edit_message_text("❌ Ошибка получения заказов")
+
 
 async def show_help(query):
     """Показать справку"""
@@ -1284,145 +1260,132 @@ async def show_crypto_deposit(query):
     await query.edit_message_text(crypto_text, reply_markup=reply_markup)
 
 async def show_wallet_history(query):
-    """Показать историю кошелька"""
+    """Показать историю кошелька через Supabase"""
     user_id = query.from_user.id
-    
     try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT amount, transaction_type, description, created_at 
-            FROM wallet_transactions 
-            WHERE user_id = ? 
-            ORDER BY created_at DESC 
-            LIMIT 10
-        ''', (user_id,))
-        
-        transactions = cursor.fetchall()
-        conn.close()
-        
+        transactions = supabase.table("wallet_transactions")\
+            .select("*")\
+            .eq("user_id", user_id)\
+            .order("created_at", desc=True)\
+            .limit(10).execute().data
+
         if transactions:
             history_text = "📊 История транзакций:\n\n"
-            for transaction in transactions:
-                amount, transaction_type, description, created_at = transaction
-                emoji = "➕" if amount > 0 else "➖"
-                history_text += f"{emoji} {amount:.2f} USD\n"
-                history_text += f"   Тип: {transaction_type}\n"
-                history_text += f"   Описание: {description}\n"
-                history_text += f"   Дата: {created_at}\n\n"
+            for t in transactions:
+                emoji = "➕" if t["amount"] > 0 else "➖"
+                history_text += f"{emoji} {t['amount']:.2f} USD\n"
+                history_text += f"   Тип: {t['transaction_type']}\n"
+                history_text += f"   Описание: {t['description']}\n"
+                history_text += f"   Дата: {t['created_at']}\n\n"
         else:
             history_text = "📊 История транзакций пуста"
-        
+
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="wallet")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await query.edit_message_text(history_text, reply_markup=reply_markup)
-        
     except Exception as e:
-        logger.error(f"Ошибка получения истории: {e}")
+        logger.error(f"Ошибка show_wallet_history: {e}")
         await query.edit_message_text("❌ Ошибка получения истории")
 
+
 async def show_all_orders(query):
-    """Показать все заказы (админ)"""
+    """Показать все заказы (админ) через Supabase"""
     try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT o.id, o.user_id, o.service_type, o.amount, o.status, o.created_at,
-                   w.balance
-            FROM orders o
-            LEFT JOIN wallets w ON o.user_id = w.user_id
-            ORDER BY o.created_at DESC
-            LIMIT 20
-        ''', ())
-        
-        orders = cursor.fetchall()
-        conn.close()
-        
+        # Получаем заказы с балансом пользователя через Supabase
+        orders_resp = supabase.table("orders")\
+            .select("id, user_id, service_type, amount, status, created_at, wallets(balance)")\
+            .order("created_at", desc=True)\
+            .limit(20)\
+            .execute()
+
+        orders = orders_resp.data
+
         if orders:
             orders_text = "📋 Все заказы:\n\n"
             for order in orders:
-                order_id, user_id, service_type, amount, status, created_at, balance = order
+                order_id = order["id"]
+                user_id = order["user_id"]
+                service_type = order["service_type"]
+                amount = order["amount"]
+                status = order["status"]
+                created_at = order["created_at"]
+                # Баланс из связанной таблицы wallets
+                balance = order.get("wallets", [{}])[0].get("balance", 0)
+
                 orders_text += f"🔹 Заказ #{order_id}\n"
                 orders_text += f"   Пользователь: {user_id}\n"
                 orders_text += f"   Услуга: {service_type}\n"
                 orders_text += f"   Сумма: {amount:.2f} USD\n"
                 orders_text += f"   Статус: {status}\n"
-                orders_text += f"   Баланс: {balance or 0:.2f} USD\n"
+                orders_text += f"   Баланс: {balance:.2f} USD\n"
                 orders_text += f"   Дата: {created_at}\n\n"
         else:
             orders_text = "📋 Заказов пока нет"
-        
+
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await query.edit_message_text(orders_text, reply_markup=reply_markup)
-        
+
     except Exception as e:
         logger.error(f"Ошибка получения заказов: {e}")
         await query.edit_message_text("❌ Ошибка получения заказов")
 
+
 async def show_wallets_management(query):
-    """Показать управление кошельками (админ)"""
+    """Показать управление кошельками (админ) через Supabase"""
     try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT user_id, balance, created_at
-            FROM wallets
-            ORDER BY balance DESC
-            LIMIT 10
-        ''', ())
-        
-        wallets = cursor.fetchall()
-        conn.close()
-        
+        # Получаем кошельки, сортируя по балансу по убыванию
+        wallets_resp = supabase.table("wallets")\
+            .select("user_id, balance, created_at")\
+            .order("balance", desc=True)\
+            .limit(10)\
+            .execute()
+
+        wallets = wallets_resp.data
+
         if wallets:
             wallets_text = "💰 Управление кошельками:\n\n"
             for wallet in wallets:
-                user_id, balance, created_at = wallet
+                user_id = wallet["user_id"]
+                balance = wallet["balance"]
+                created_at = wallet["created_at"]
+
                 wallets_text += f"👤 Пользователь: {user_id}\n"
                 wallets_text += f"   Баланс: {balance:.2f} USD\n"
                 wallets_text += f"   Создан: {created_at}\n\n"
         else:
             wallets_text = "💰 Кошельков пока нет"
-        
+
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await query.edit_message_text(wallets_text, reply_markup=reply_markup)
-        
+
     except Exception as e:
         logger.error(f"Ошибка получения кошельков: {e}")
         await query.edit_message_text("❌ Ошибка получения кошельков")
 
+
 async def show_admin_stats(query):
-    """Показать статистику (админ)"""
+    """Показать статистику (админ) через Supabase"""
     try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
         # Количество пользователей
-        cursor.execute('SELECT COUNT(*) FROM wallets')
-        users_count = cursor.fetchone()[0]
-        
+        users_resp = supabase.table("wallets").select("user_id", count="exact").execute()
+        users_count = users_resp.count or 0
+
         # Количество заказов
-        cursor.execute('SELECT COUNT(*) FROM orders')
-        orders_count = cursor.fetchone()[0]
-        
+        orders_resp = supabase.table("orders").select("id", count="exact").execute()
+        orders_count = orders_resp.count or 0
+
         # Общая сумма заказов
-        cursor.execute('SELECT SUM(amount) FROM orders')
-        total_amount = cursor.fetchone()[0] or 0
-        
+        total_amount_resp = supabase.table("orders").select("amount").execute()
+        total_amount = sum(order["amount"] for order in total_amount_resp.data) if total_amount_resp.data else 0
+
         # Общий баланс всех кошельков
-        cursor.execute('SELECT SUM(balance) FROM wallets')
-        total_balance = cursor.fetchone()[0] or 0
-        
-        conn.close()
-        
+        total_balance_resp = supabase.table("wallets").select("balance").execute()
+        total_balance = sum(wallet["balance"] for wallet in total_balance_resp.data) if total_balance_resp.data else 0
+
         stats_text = f"""
 📊 Статистика бота:
 
@@ -1431,15 +1394,16 @@ async def show_admin_stats(query):
 💰 Общая сумма заказов: {total_amount:.2f} USD
 💳 Общий баланс кошельков: {total_balance:.2f} USD
 """
-        
+
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await query.edit_message_text(stats_text, reply_markup=reply_markup)
-        
+
     except Exception as e:
         logger.error(f"Ошибка получения статистики: {e}")
         await query.edit_message_text("❌ Ошибка получения статистики")
+
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений"""
@@ -1738,267 +1702,279 @@ def health():
 
 @app.route('/stats')
 def stats():
-    """Статистика бота"""
     try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
-        # Количество пользователей
-        cursor.execute('SELECT COUNT(*) FROM wallets')
-        users_count = cursor.fetchone()[0]
-        
-        # Количество заказов
-        cursor.execute('SELECT COUNT(*) FROM orders')
-        orders_count = cursor.fetchone()[0]
-        
-        # Общая сумма заказов
-        cursor.execute('SELECT SUM(amount) FROM orders')
-        total_amount = cursor.fetchone()[0] or 0
-        
-        conn.close()
-        
+        users_count = supabase.table("wallets").select("user_id").execute().count
+        orders_count = supabase.table("orders").select("id").execute().count
+        total_amount_resp = supabase.table("orders").select("amount").execute()
+        total_amount = sum([o["amount"] for o in total_amount_resp.data])
+
         return jsonify({
-            'users_count': users_count,
-            'orders_count': orders_count,
-            'total_amount': total_amount,
-            'timestamp': datetime.now().isoformat()
+            "users_count": users_count,
+            "orders_count": orders_count,
+            "total_amount": total_amount,
+            "timestamp": datetime.now().isoformat()
         })
-        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# API для администраторов через Supabase
+@app.route('/admin/orders', methods=['GET'])
+def get_orders():
+    """Получить все заказы через Supabase"""
+    try:
+        # Получаем заказы с балансами пользователей
+        orders_resp = supabase.table("orders").select("id,user_id,service_type,amount,status,created_at").order("created_at", desc=True).execute()
+        orders_data = orders_resp.data or []
+
+        # Получаем балансы всех пользователей, чтобы не делать отдельный запрос на каждого
+        user_ids = [order["user_id"] for order in orders_data]
+        wallets_resp = supabase.table("wallets").select("user_id,balance").in_("user_id", user_ids).execute()
+        wallets_data = {w["user_id"]: w["balance"] for w in wallets_resp.data} if wallets_resp.data else {}
+
+        orders_list = []
+        for order in orders_data:
+            orders_list.append({
+                'id': order["id"],
+                'user_id': order["user_id"],
+                'service_type': order["service_type"],
+                'amount': order["amount"],
+                'status': order["status"],
+                'created_at': order["created_at"],
+                'user_balance': wallets_data.get(order["user_id"], 0)
+            })
+
+        return jsonify(orders_list)
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# API для администраторов
-@app.route('/admin/orders', methods=['GET'])
-def get_orders():
-    """Получить все заказы"""
-    try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT o.id, o.user_id, o.service_type, o.amount, o.status, o.created_at,
-                   w.balance
-            FROM orders o
-            LEFT JOIN wallets w ON o.user_id = w.user_id
-            ORDER BY o.created_at DESC
-        ''')
-        
-        orders = cursor.fetchall()
-        conn.close()
-        
-        orders_list = []
-        for order in orders:
-            orders_list.append({
-                'id': order[0],
-                'user_id': order[1],
-                'service_type': order[2],
-                'amount': order[3],
-                'status': order[4],
-                'created_at': order[5],
-                'user_balance': order[6] or 0
-            })
-        
-        return jsonify(orders_list)
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 @app.route('/admin/order/<int:order_id>', methods=['GET'])
 def get_order(order_id):
-    """Получить конкретный заказ"""
+    """Получить конкретный заказ через Supabase"""
     try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT o.*, w.balance
-            FROM orders o
-            LEFT JOIN wallets w ON o.user_id = w.user_id
-            WHERE o.id = ?
-        ''', (order_id,))
-        
-        order = cursor.fetchone()
-        conn.close()
-        
-        if order:
-            return jsonify({
-                'id': order[0],
-                'user_id': order[1],
-                'service_type': order[2],
-                'amount': order[3],
-                'status': order[4],
-                'description': order[5],
-                'created_at': order[6],
-                'updated_at': order[7],
-                'user_balance': order[8] or 0
-            })
-        else:
+        # Получаем заказ
+        order_resp = supabase.table("orders").select("*").eq("id", order_id).single().execute()
+        order = order_resp.data
+
+        if not order:
             return jsonify({'error': 'Заказ не найден'}), 404
-            
+
+        # Получаем баланс пользователя
+        wallet_resp = supabase.table("wallets").select("balance").eq("user_id", order["user_id"]).single().execute()
+        balance = wallet_resp.data["balance"] if wallet_resp.data else 0
+
+        return jsonify({
+            'id': order["id"],
+            'user_id': order["user_id"],
+            'service_type': order["service_type"],
+            'amount': order["amount"],
+            'status': order["status"],
+            'description': order.get("description"),
+            'created_at': order["created_at"],
+            'updated_at': order["updated_at"],
+            'user_balance': balance
+        })
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
 @app.route('/admin/order/<int:order_id>/status', methods=['POST'])
 def update_order_status(order_id):
-    """Обновить статус заказа"""
+    """Обновить статус заказа через Supabase"""
     try:
         data = request.get_json()
         new_status = data.get('status')
         notes = data.get('notes', '')
         admin_id = data.get('admin_id')
-        
+
         if not new_status:
             return jsonify({'error': 'Статус обязателен'}), 400
-        
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
+
         # Обновляем статус заказа
-        cursor.execute('''
-            UPDATE orders 
-            SET status = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        ''', (new_status, order_id))
-        
+        supabase.table("orders").update({
+            "status": new_status,
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", order_id).execute()
+
         # Добавляем в историю
-        cursor.execute('''
-            INSERT INTO order_status_history (order_id, status, admin_id, notes)
-            VALUES (?, ?, ?, ?)
-        ''', (order_id, new_status, admin_id, notes))
-        
-        conn.commit()
-        conn.close()
-        
+        supabase.table("order_status_history").insert({
+            "order_id": order_id,
+            "status": new_status,
+            "admin_id": admin_id,
+            "notes": notes,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+
         return jsonify({'success': True, 'message': 'Статус обновлен'})
-        
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/admin/wallet/<int:user_id>', methods=['GET'])
 def get_wallet_info(user_id):
-    """Получить информацию о кошельке"""
+    """Получить информацию о кошельке через Supabase"""
     try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT w.balance, w.created_at,
-                   COUNT(t.id) as transactions_count
-            FROM wallets w
-            LEFT JOIN wallet_transactions t ON w.user_id = t.user_id
-            WHERE w.user_id = ?
-            GROUP BY w.user_id
-        ''', (user_id,))
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            return jsonify({
-                'user_id': user_id,
-                'balance': result[0],
-                'created_at': result[1],
-                'transactions_count': result[2]
-            })
-        else:
+        # Получаем кошелек пользователя
+        wallet_resp = supabase.table("wallets").select("balance, created_at").eq("user_id", user_id).single().execute()
+        wallet = wallet_resp.data
+
+        if not wallet:
             return jsonify({'error': 'Кошелек не найден'}), 404
-            
+
+        # Получаем количество транзакций
+        transactions_resp = supabase.table("wallet_transactions").select("id", count="exact").eq("user_id", user_id).execute()
+        transactions_count = transactions_resp.count or 0
+
+        return jsonify({
+            'user_id': user_id,
+            'balance': wallet['balance'],
+            'created_at': wallet['created_at'],
+            'transactions_count': transactions_count
+        })
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/admin/wallet/<int:user_id>/deposit', methods=['POST'])
 def deposit_wallet(user_id):
-    """Пополнить кошелек"""
+    """Пополнить кошелек через Supabase"""
     try:
         data = request.get_json()
         amount = data.get('amount')
         admin_id = data.get('admin_id')
-        
+
         if not amount or amount <= 0:
             return jsonify({'error': 'Сумма должна быть больше 0'}), 400
-        
-        success = update_wallet_balance(user_id, amount, 'deposit', f'Пополнение администратором {admin_id}')
-        
-        if success:
-            return jsonify({'success': True, 'message': 'Кошелек пополнен'})
-        else:
-            return jsonify({'error': 'Ошибка пополнения'}), 500
-            
+
+        # Получаем текущий баланс
+        wallet_resp = supabase.table("wallets").select("balance").eq("user_id", user_id).single().execute()
+        wallet = wallet_resp.data
+
+        if not wallet:
+            return jsonify({'error': 'Кошелек не найден'}), 404
+
+        new_balance = wallet['balance'] + amount
+
+        # Обновляем баланс кошелька
+        supabase.table("wallets").update({"balance": new_balance, "updated_at": datetime.now().isoformat()}).eq("user_id", user_id).execute()
+
+        # Добавляем транзакцию
+        supabase.table("wallet_transactions").insert({
+            "user_id": user_id,
+            "amount": amount,
+            "transaction_type": "deposit",
+            "description": f"Пополнение администратором {admin_id}",
+            "created_at": datetime.now().isoformat()
+        }).execute()
+
+        return jsonify({'success': True, 'message': 'Кошелек пополнен'})
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/admin/wallet/<int:user_id>/withdraw', methods=['POST'])
 def withdraw_wallet(user_id):
-    """Вывести средства из кошелька"""
+    """Вывести средства из кошелька через Supabase"""
     try:
         data = request.get_json()
         amount = data.get('amount')
         admin_id = data.get('admin_id')
-        
+
         if not amount or amount <= 0:
             return jsonify({'error': 'Сумма должна быть больше 0'}), 400
-        
-        # Проверяем баланс
-        current_balance = get_user_wallet(user_id)
+
+        # Получаем текущий баланс
+        wallet_resp = supabase.table("wallets").select("balance").eq("user_id", user_id).single().execute()
+        wallet = wallet_resp.data
+
+        if not wallet:
+            return jsonify({'error': 'Кошелек не найден'}), 404
+
+        current_balance = wallet['balance']
         if current_balance < amount:
             return jsonify({'error': 'Недостаточно средств'}), 400
-        
-        success = update_wallet_balance(user_id, -amount, 'withdraw', f'Вывод администратором {admin_id}')
-        
-        if success:
-            return jsonify({'success': True, 'message': 'Средства выведены'})
-        else:
-            return jsonify({'error': 'Ошибка вывода'}), 500
-            
+
+        new_balance = current_balance - amount
+
+        # Обновляем баланс кошелька
+        supabase.table("wallets").update({"balance": new_balance, "updated_at": datetime.now().isoformat()}).eq("user_id", user_id).execute()
+
+        # Добавляем транзакцию
+        supabase.table("wallet_transactions").insert({
+            "user_id": user_id,
+            "amount": -amount,
+            "transaction_type": "withdraw",
+            "description": f"Вывод администратором {admin_id}",
+            "created_at": datetime.now().isoformat()
+        }).execute()
+
+        return jsonify({'success': True, 'message': 'Средства выведены'})
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
 # Функция для проверки криптоплатежей
 async def check_crypto_payments():
-    """Проверка криптоплатежей в фоновом режиме"""
+    """Проверка криптоплатежей через Supabase в фоновом режиме"""
     global crypto_checker
-    
+
     if not crypto_checker:
         logger.warning("Крипточекер не инициализирован")
         return
-    
+
     try:
-        # Получаем все pending заказы с криптоплатежами
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT id, user_id, service_type, amount 
-            FROM orders 
-            WHERE status = 'pending' 
-            AND service_type LIKE 'crypto_%'
-        ''')
-        
-        pending_orders = cursor.fetchall()
-        conn.close()
-        
-        for order_id, user_id, service_type, amount in pending_orders:
-            # Определяем валюту
-            currency = service_type.replace('crypto_', '')
-            
+        # Получаем все pending заказы с криптоплатежами через Supabase
+        pending_resp = supabase.table("orders")\
+            .select("id, user_id, service_type, amount")\
+            .eq("status", "pending")\
+            .like("service_type", "crypto_%")\
+            .execute()
+
+        pending_orders = pending_resp.data or []
+
+        for order in pending_orders:
+            order_id = order["id"]
+            user_id = order["user_id"]
+            service_type = order["service_type"]
+            amount = order["amount"]
+
+            currency = service_type.replace("crypto_", "")
+
             # Проверяем платеж
             result = crypto_checker.check_payment(currency, amount, order_id)
-            
-            if result['success']:
-                # Платеж найден, обрабатываем
-                if crypto_checker.process_payment(result):
-                    # Обновляем статус заказа
-                    update_order_status(order_id, 'completed', ADMIN_ID, f'Криптоплатеж подтвержден: {result["amount"]} {result["currency"]}')
-                    
-                    # Выдаем карту
-                    card_info = auto_issue_card(service_type, amount, user_id)
-                    
-                    # Уведомляем пользователя
-                    try:
-                        from telegram.ext import Application
-                        app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-                        
-                        success_text = f"""
+
+            if result["success"] and crypto_checker.process_payment(result):
+                # Обновляем статус заказа через Supabase
+                supabase.table("orders").update({
+                    "status": "completed",
+                    "updated_at": datetime.now().isoformat()
+                }).eq("id", order_id).execute()
+
+                # Добавляем запись в историю статусов
+                supabase.table("order_status_history").insert({
+                    "order_id": order_id,
+                    "status": "completed",
+                    "admin_id": ADMIN_ID,
+                    "notes": f'Криптоплатеж подтвержден: {result["amount"]} {result["currency"]}',
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+
+                # Выдаем карту
+                card_info = auto_issue_card(service_type, amount, user_id)
+
+                # Уведомляем пользователя
+                try:
+                    from telegram.ext import Application
+                    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+                    success_text = f"""
 ✅ **Платеж подтвержден!**
 
 💰 Сумма: {result['amount']} {result['currency'].upper()}
@@ -2011,20 +1987,21 @@ async def check_crypto_payments():
 CVV: {card_info['cvv']}
 
 Спасибо за покупку! 🎉
-                        """
-                        
-                        await app.bot.send_message(
-                            chat_id=user_id,
-                            text=success_text,
-                            parse_mode='Markdown'
-                        )
-                    except Exception as e:
-                        logger.error(f"Ошибка уведомления пользователя {user_id}: {e}")
-                    
-                    logger.info(f"Заказ {order_id} обработан успешно")
-                    
+                    """
+
+                    await app.bot.send_message(
+                        chat_id=user_id,
+                        text=success_text,
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка уведомления пользователя {user_id}: {e}")
+
+                logger.info(f"Заказ {order_id} обработан успешно")
+
     except Exception as e:
         logger.error(f"Ошибка проверки криптоплатежей: {e}")
+
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок"""

@@ -1,21 +1,19 @@
 import os
 import logging
-import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.error import Conflict, NetworkError, TimedOut
 from flask import Flask, request, jsonify
 import threading
 import time
-from datetime import datetime, timedelta
-import json
+from datetime import datetime
 import re
 import signal
 import sys
 import sqlite3
-from decimal import Decimal, ROUND_HALF_UP
+from supabase import create_client, Client
 
-# первый етст коммит
+# первый тест  коммит
 # Загружаем переменные окружения из .env файла
 try:
     from dotenv import load_dotenv
@@ -123,454 +121,163 @@ WALLET_TRANSACTION_TYPES = {
     'commission': 'Комиссия'
 }
 
-def init_database():
-    """Инициализация базы данных"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Таблица пользователей и кошельков
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS wallets (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                balance DECIMAL(10,2) DEFAULT 0.00,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Таблица транзакций кошелька
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS wallet_transactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                transaction_type TEXT,
-                amount DECIMAL(10,2),
-                description TEXT,
-                order_id INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES wallets (user_id)
-            )
-        ''')
-        
-        # Таблица заказов
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                order_type TEXT,
-                service_name TEXT,
-                amount DECIMAL(10,2),
-                commission DECIMAL(10,2),
-                total_amount DECIMAL(10,2),
-                status TEXT DEFAULT 'pending',
-                payment_method TEXT,
-                wallet_payment BOOLEAN DEFAULT FALSE,
-                admin_notes TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                completed_at TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES wallets (user_id)
-            )
-        ''')
-        
-        # Таблица истории статусов заказов
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS order_status_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_id INTEGER,
-                status TEXT,
-                admin_id INTEGER,
-                notes TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (order_id) REFERENCES orders (id)
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
-        logger.info("База данных инициализирована успешно")
-    except Exception as e:
-        logger.error(f"Ошибка инициализации базы данных: {e}")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_API_SECRET = os.getenv("SUPABASE_API_SECRET")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_API_SECRET)
 
+
+# -------------------- Кошельки --------------------
 def get_or_create_wallet(user_id, username=None, first_name=None):
-    """Получить или создать кошелек пользователя"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Проверяем существование кошелька
-        cursor.execute('SELECT * FROM wallets WHERE user_id = ?', (user_id,))
-        wallet = cursor.fetchone()
-        
+        response = supabase.table("wallets").select("*").eq("user_id", user_id).execute()
+        wallet = response.data[0] if response.data else None
+
         if wallet:
-            return {
-                'user_id': wallet[0],
-                'username': wallet[1],
-                'first_name': wallet[2],
-                'balance': float(wallet[3]),
-                'created_at': wallet[4],
-                'updated_at': wallet[5]
-            }
+            wallet['balance'] = float(wallet['balance'])
+            return wallet
         else:
-            # Создаем новый кошелек
-            cursor.execute('''
-                INSERT INTO wallets (user_id, username, first_name, balance)
-                VALUES (?, ?, ?, 0.00)
-            ''', (user_id, username, first_name))
-            conn.commit()
-            
-            return {
-                'user_id': user_id,
-                'username': username,
-                'first_name': first_name,
-                'balance': 0.00,
-                'created_at': datetime.now().isoformat(),
-                'updated_at': datetime.now().isoformat()
+            now = datetime.utcnow().isoformat()
+            wallet_data = {
+                "user_id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "balance": 0.00,
+                "created_at": now,
+                "updated_at": now
             }
+            supabase.table("wallets").insert(wallet_data).execute()
+            return wallet_data
     except Exception as e:
         logger.error(f"Ошибка получения/создания кошелька: {e}")
         return None
-    finally:
-        conn.close()
 
+# -------------------- Транзакции --------------------
 def add_wallet_transaction(user_id, transaction_type, amount, description, order_id=None):
-    """Добавить транзакцию в кошелек"""
+    """Добавить транзакцию и обновить баланс"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
         # Добавляем транзакцию
-        cursor.execute('''
-            INSERT INTO wallet_transactions (user_id, transaction_type, amount, description, order_id)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, transaction_type, amount, description, order_id))
-        
-        # Обновляем баланс кошелька
+        trans_data = {
+            "user_id": user_id,
+            "transaction_type": transaction_type,
+            "amount": amount,
+            "description": description,
+            "order_id": order_id,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        supabase.table("wallet_transactions").insert(trans_data).execute()
+
+        # Обновляем баланс через RPC (рекомендуется, чтобы избежать гонок)
         if transaction_type in ['deposit', 'refund']:
-            cursor.execute('''
-                UPDATE wallets 
-                SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = ?
-            ''', (amount, user_id))
+            supabase.rpc("increment_wallet_balance", {"p_user_id": user_id, "p_amount": amount}).execute()
         elif transaction_type in ['withdrawal', 'payment', 'commission']:
-            cursor.execute('''
-                UPDATE wallets 
-                SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = ?
-            ''', (amount, user_id))
-        
-        conn.commit()
-        conn.close()
+            supabase.rpc("decrement_wallet_balance", {"p_user_id": user_id, "p_amount": amount}).execute()
+
         return True
     except Exception as e:
         logger.error(f"Ошибка добавления транзакции: {e}")
         return False
 
+# -------------------- Заказы --------------------
 def create_order(user_id, order_type, service_name, amount, commission, total_amount, payment_method, wallet_payment=False):
-    """Создать новый заказ"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO orders (user_id, order_type, service_name, amount, commission, total_amount, payment_method, wallet_payment)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (user_id, order_type, service_name, amount, commission, total_amount, payment_method, wallet_payment))
-        
-        order_id = cursor.lastrowid
-        
-        # Добавляем запись в историю статусов
-        cursor.execute('''
-            INSERT INTO order_status_history (order_id, status, notes)
-            VALUES (?, 'pending', 'Заказ создан')
-        ''', (order_id,))
-        
-        conn.commit()
-        conn.close()
+        order_data = {
+            "user_id": user_id,
+            "order_type": order_type,
+            "service_name": service_name,
+            "amount": amount,
+            "commission": commission,
+            "total_amount": total_amount,
+            "payment_method": payment_method,
+            "wallet_payment": wallet_payment,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        response = supabase.table("orders").insert(order_data).execute()
+        order_id = response.data[0]['id']
+
+        # История статусов
+        supabase.table("order_status_history").insert({
+            "order_id": order_id,
+            "status": "pending",
+            "notes": "Заказ создан",
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+
         return order_id
     except Exception as e:
         logger.error(f"Ошибка создания заказа: {e}")
         return None
 
 def update_order_status(order_id, new_status, admin_id=None, notes=None):
-    """Обновить статус заказа"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Обновляем статус заказа
-        cursor.execute('''
-            UPDATE orders 
-            SET status = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        ''', (new_status, order_id))
-        
-        # Если заказ завершен, устанавливаем время завершения
-        if new_status == 'completed':
-            cursor.execute('''
-                UPDATE orders 
-                SET completed_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            ''', (order_id,))
-        
-        # Добавляем запись в историю статусов
-        cursor.execute('''
-            INSERT INTO order_status_history (order_id, status, admin_id, notes)
-            VALUES (?, ?, ?, ?)
-        ''', (order_id, new_status, admin_id, notes))
-        
-        conn.commit()
-        conn.close()
+        updates = {
+            "status": new_status,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        if new_status == "completed":
+            updates["completed_at"] = datetime.utcnow().isoformat()
+        supabase.table("orders").update(updates).eq("id", order_id).execute()
+
+        supabase.table("order_status_history").insert({
+            "order_id": order_id,
+            "status": new_status,
+            "admin_id": admin_id,
+            "notes": notes,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
         return True
     except Exception as e:
         logger.error(f"Ошибка обновления статуса заказа: {e}")
         return False
 
+# -------------------- Получение данных --------------------
 def get_user_orders(user_id, limit=10):
-    """Получить заказы пользователя"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT id, order_type, service_name, amount, total_amount, status, created_at, updated_at
-            FROM orders 
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-        ''', (user_id, limit))
-        
-        orders = cursor.fetchall()
-        conn.close()
-        
-        return [{
-            'id': order[0],
-            'order_type': order[1],
-            'service_name': order[2],
-            'amount': float(order[3]),
-            'total_amount': float(order[4]),
-            'status': order[5],
-            'created_at': order[6],
-            'updated_at': order[7]
-        } for order in orders]
-    except Exception as e:
-        logger.error(f"Ошибка получения заказов пользователя: {e}")
-        return []
+    response = supabase.table("orders").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute()
+    return response.data
 
 def get_order_details(order_id):
-    """Получить детали заказа"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT o.*, w.username, w.first_name
-            FROM orders o
-            LEFT JOIN wallets w ON o.user_id = w.user_id
-            WHERE o.id = ?
-        ''', (order_id,))
-        
-        order = cursor.fetchone()
-        
+        order_resp = supabase.table("orders").select("*, wallets(username, first_name)").eq("id", order_id).execute()
+        order = order_resp.data[0] if order_resp.data else None
         if not order:
-            conn.close()
             return None
-        
-        # Получаем историю статусов
-        cursor.execute('''
-            SELECT status, admin_id, notes, created_at
-            FROM order_status_history
-            WHERE order_id = ?
-            ORDER BY created_at ASC
-        ''', (order_id,))
-        
-        status_history = cursor.fetchall()
-        
-        conn.close()
-        
-        return {
-            'id': order[0],
-            'user_id': order[1],
-            'order_type': order[2],
-            'service_name': order[3],
-            'amount': float(order[4]),
-            'commission': float(order[5]),
-            'total_amount': float(order[6]),
-            'status': order[7],
-            'payment_method': order[8],
-            'wallet_payment': bool(order[9]),
-            'admin_notes': order[10],
-            'created_at': order[11],
-            'updated_at': order[12],
-            'completed_at': order[13],
-            'username': order[14],
-            'first_name': order[15],
-            'status_history': [{
-                'status': status[0],
-                'admin_id': status[1],
-                'notes': status[2],
-                'created_at': status[3]
-            } for status in status_history]
-        }
+        status_resp = supabase.table("order_status_history").select("*").eq("order_id", order_id).order("created_at").execute()
+        order['status_history'] = status_resp.data
+        return order
     except Exception as e:
         logger.error(f"Ошибка получения деталей заказа: {e}")
         return None
 
 def get_wallet_transactions(user_id, limit=10):
-    """Получить транзакции кошелька пользователя"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT transaction_type, amount, description, created_at
-            FROM wallet_transactions
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-        ''', (user_id, limit))
-        
-        transactions = cursor.fetchall()
-        conn.close()
-        
-        return [{
-            'transaction_type': trans[0],
-            'amount': float(trans[1]),
-            'description': trans[2],
-            'created_at': trans[3]
-        } for trans in transactions]
-    except Exception as e:
-        logger.error(f"Ошибка получения транзакций кошелька: {e}")
-        return []
+    response = supabase.table("wallet_transactions").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute()
+    return response.data
 
 def get_all_orders(limit=50, status=None):
-    """Получить все заказы (для администратора)"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        if status:
-            cursor.execute('''
-                SELECT o.id, o.user_id, o.order_type, o.service_name, o.amount, o.total_amount, o.status, o.created_at, w.username, w.first_name
-                FROM orders o
-                LEFT JOIN wallets w ON o.user_id = w.user_id
-                WHERE o.status = ?
-                ORDER BY o.created_at DESC
-                LIMIT ?
-            ''', (status, limit))
-        else:
-            cursor.execute('''
-                SELECT o.id, o.user_id, o.order_type, o.service_name, o.amount, o.total_amount, o.status, o.created_at, w.username, w.first_name
-                FROM orders o
-                LEFT JOIN wallets w ON o.user_id = w.user_id
-                ORDER BY o.created_at DESC
-                LIMIT ?
-            ''', (limit,))
-        
-        orders = cursor.fetchall()
-        conn.close()
-        
-        return [{
-            'id': order[0],
-            'user_id': order[1],
-            'order_type': order[2],
-            'service_name': order[3],
-            'amount': float(order[4]),
-            'total_amount': float(order[5]),
-            'status': order[6],
-            'created_at': order[7],
-            'username': order[8],
-            'first_name': order[9]
-        } for order in orders]
-    except Exception as e:
-        logger.error(f"Ошибка получения всех заказов: {e}")
-        return []
+    query = supabase.table("orders").select("*, wallets(username, first_name)").order("created_at", desc=True).limit(limit)
+    if status:
+        query = query.eq("status", status)
+    response = query.execute()
+    return response.data
 
+# -------------------- Администрирование --------------------
 def admin_deposit_to_wallet(user_id, amount, admin_id, description="Пополнение администратором"):
-    """Пополнение кошелька пользователя администратором"""
-    try:
-        # Проверяем существование кошелька
-        wallet = get_or_create_wallet(user_id)
-        if not wallet:
-            return False
-        
-        # Добавляем транзакцию пополнения
-        success = add_wallet_transaction(
-            user_id=user_id,
-            transaction_type='deposit',
-            amount=amount,
-            description=description,
-            order_id=None
-        )
-        
-        if success:
-            # Добавляем запись в историю административных действий
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO wallet_transactions (user_id, transaction_type, amount, description, order_id)
-                VALUES (?, 'deposit', ?, ?, NULL)
-            ''', (user_id, amount, f"{description} (Админ ID: {admin_id})"))
-            conn.commit()
-            conn.close()
-            
-        return success
-    except Exception as e:
-        logger.error(f"Ошибка пополнения кошелька администратором: {e}")
+    wallet = get_or_create_wallet(user_id)
+    if not wallet:
         return False
+    return add_wallet_transaction(user_id, "deposit", amount, f"{description} (Админ ID: {admin_id})")
 
 def admin_withdraw_from_wallet(user_id, amount, admin_id, description="Вывод администратором"):
-    """Вывод средств из кошелька пользователя администратором"""
-    try:
-        # Проверяем существование кошелька и достаточность средств
-        wallet = get_or_create_wallet(user_id)
-        if not wallet or wallet['balance'] < amount:
-            return False
-        
-        # Добавляем транзакцию вывода
-        success = add_wallet_transaction(
-            user_id=user_id,
-            transaction_type='withdrawal',
-            amount=amount,
-            description=description,
-            order_id=None
-        )
-        
-        if success:
-            # Добавляем запись в историю административных действий
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO wallet_transactions (user_id, transaction_type, amount, description, order_id)
-                VALUES (?, 'withdrawal', ?, ?, NULL)
-            ''', (user_id, amount, f"{description} (Админ ID: {admin_id})"))
-            conn.commit()
-            conn.close()
-            
-        return success
-    except Exception as e:
-        logger.error(f"Ошибка вывода из кошелька администратором: {e}")
+    wallet = get_or_create_wallet(user_id)
+    if not wallet or wallet['balance'] < amount:
         return False
+    return add_wallet_transaction(user_id, "withdrawal", amount, f"{description} (Админ ID: {admin_id})")
 
 def get_user_wallet_info(user_id):
-    """Получить информацию о кошельке пользователя"""
-    try:
-        wallet = get_or_create_wallet(user_id)
-        if not wallet:
-            return None
-        
-        transactions = get_wallet_transactions(user_id, limit=10)
-        
-        return {
-            'wallet': wallet,
-            'transactions': transactions
-        }
-    except Exception as e:
-        logger.error(f"Ошибка получения информации о кошельке: {e}")
+    wallet = get_or_create_wallet(user_id)
+    if not wallet:
         return None
+    transactions = get_wallet_transactions(user_id, limit=10)
+    return {"wallet": wallet, "transactions": transactions}
 
 # Flask приложение для проверки состояния
 app = Flask(__name__)

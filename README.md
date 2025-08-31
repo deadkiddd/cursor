@@ -139,7 +139,7 @@ pip list
 dir
 
 # Запуск бота
-python render_bot_final.py
+python render_bot.py
 ```
 
 ## 📞 Поддержка

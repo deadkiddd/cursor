@@ -31,7 +31,7 @@ PORT=10000
 ## Запуск бота
 
 ```bash
-python render_bot_final.py
+python render_bot.py
 ```
 
 ## Инициализация базы данных

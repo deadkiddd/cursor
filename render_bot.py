@@ -133,6 +133,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_API_SECRET = os.getenv("SUPABASE_API_SECRET")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_API_SECRET)
 
+
 # Функции для работы с базой данных
 def get_user_wallet(user_id):
     """Получить кошелек пользователя через Supabase"""
@@ -1526,6 +1527,7 @@ CVV: {card_info['cvv']}
         await update.message.reply_text("❌ Произошла ошибка. Попробуйте еще раз.")
         del user_states[user_id]
 
+
 async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: dict):
     """Обработка ввода суммы пополнения"""
     user_id = update.effective_user.id
@@ -1980,6 +1982,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка отправки сообщения пользователю: {e}")
 
+
 # Основная функция запуска
 def main():
     """Основная функция запуска"""
@@ -2002,7 +2005,7 @@ def main():
     # Инициализируем крипточекер
     global crypto_checker
     try:
-        from crypto_checker_simple import SimpleCryptoChecker
+        from crypto_checker import SimpleCryptoChecker
         crypto_checker = SimpleCryptoChecker()
         
         # Проверяем, что методы существуют
@@ -2071,6 +2074,7 @@ def main():
     except Exception as e:
         print(f"❌ Ошибка запуска бота: {e}")
         signal_handler(signal.SIGTERM, None)
+
 
 if __name__ == '__main__':
     main()

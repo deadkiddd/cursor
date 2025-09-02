@@ -19,6 +19,7 @@ import signal
 import threading
 from crypto_checker import auto_issue_card
 from supabase import create_client, Client
+import atexit
 
 
 # Проверка на множественные экземпляры
@@ -1981,9 +1982,22 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка отправки сообщения пользователю: {e}")
 
 
+def cleanup_on_exit():
+    """Очистка при выходе"""
+    try:
+        # Remove lock file
+        lock_file = os.path.join(tempfile.gettempdir(), 'telegram_bot.lock')
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
+            print("✅ Файл блокировки удален")
+    except Exception as e:
+        print(f"⚠️ Ошибка очистки: {e}")
+
+
 # Основная функция запуска
 def main():
     """Основная функция запуска"""
+    atexit.register(cleanup_on_exit)
     check_single_instance() # Вызываем проверку экземпляров перед запуском бота
 
     if not TELEGRAM_BOT_TOKEN:

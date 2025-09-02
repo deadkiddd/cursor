@@ -16,7 +16,6 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from flask import Flask, request, jsonify
 from datetime import datetime
 import signal
-import sqlite3
 import threading
 from crypto_checker import auto_issue_card
 from supabase import create_client, Client
@@ -52,6 +51,7 @@ def check_single_instance():
     except Exception as e:
         print(f"⚠️ Ошибка проверки экземпляров: {e}")
 
+
 # Загружаем переменные окружения
 try:
     from dotenv import load_dotenv
@@ -83,11 +83,6 @@ print(f"TELEGRAM_BOT_TOKEN: {'✅ Установлен' if TELEGRAM_BOT_TOKEN el
 print(f"ADMIN_ID: {ADMIN_ID if ADMIN_ID else '❌ НЕ УСТАНОВЛЕН'}")
 print(f"PORT: {PORT}")
 
-# Настройки безопасности
-MAX_MESSAGE_LENGTH = 4096
-RATE_LIMIT_MESSAGES = 60
-RATE_LIMIT_WINDOW = 60
-
 # Кэш для rate limiting
 user_message_times = {}
 
@@ -97,33 +92,6 @@ user_states = {}
 # Глобальная переменная для крипточекера
 crypto_checker = None
 
-# Комиссии для разных услуг
-COMMISSION_RATES = {
-    'netflix': 0.08,
-    'steam': 0.08,
-    'discord': 0.08,
-    'spotify': 0.08,
-    'youtube': 0.08,
-    'twitch': 0.08,
-    'apple_music': 0.08,
-    'google_play': 0.08,
-    'transfer_eu': 0.08,
-    'transfer_us': 0.08,
-    'crypto_btc': 0.08,
-    'crypto_eth': 0.08,
-    'crypto_usdt': 0.08,
-    'crypto_sol': 0.08,
-    'bybit_transfer': 0.08,
-    'gpt': 0.08,
-    'twitter': 0.08
-}
-
-# Минимальные суммы
-MIN_AMOUNTS = {
-    'cards': 10,
-    'transfers': 50,
-    'crypto': 5
-}
 
 # Создаем Flask приложение
 app = Flask(__name__)
@@ -378,7 +346,6 @@ async def check_payment_command(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 
-
 async def add_money_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для ручного пополнения кошелька (только для админов)"""
     user_id = update.effective_user.id
@@ -424,12 +391,13 @@ async def add_money_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка пополнения кошелька: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
+
 # Обработчики callback
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий кнопок"""
     query = update.callback_query
     await query.answer()
-    
+
     user_id = query.from_user.id
     data = query.data
     
@@ -458,6 +426,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("crypto_deposit_"):
         await handle_crypto_deposit_selection(query, data)
 
+
 async def show_catalog(query):
     """Показать каталог услуг"""
     catalog_text = """
@@ -475,6 +444,7 @@ async def show_catalog(query):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(catalog_text, reply_markup=reply_markup)
+
 
 async def show_wallet(query):
     """Показать кошелек пользователя"""
@@ -558,6 +528,7 @@ async def show_help(query):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(help_text, reply_markup=reply_markup)
 
+
 async def show_admin_panel(query):
     """Показать админ панель"""
     admin_text = """
@@ -576,6 +547,7 @@ async def show_admin_panel(query):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(admin_text, reply_markup=reply_markup)
 
+
 async def handle_service_selection(query, data):
     """Обработка выбора услуги"""
     service_type = data.replace("service_", "")
@@ -592,6 +564,7 @@ async def handle_service_selection(query, data):
         await show_twitter_services(query)
     elif service_type == "other_services":
         await show_other_services(query)
+
 
 async def show_subscriptions(query):
     """Показать подписки"""
@@ -611,6 +584,7 @@ async def show_subscriptions(query):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(subscriptions_text, reply_markup=reply_markup)
 
+
 async def show_transfers(query):
     """Показать переводы"""
     transfers_text = """
@@ -626,6 +600,7 @@ async def show_transfers(query):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(transfers_text, reply_markup=reply_markup)
+
 
 async def show_crypto(query):
     """Показать криптовалюты"""
@@ -645,6 +620,7 @@ async def show_crypto(query):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(crypto_text, reply_markup=reply_markup)
 
+
 async def show_other_services(query):
     """Показать другие сервисы"""
     other_services_text = """
@@ -661,6 +637,7 @@ async def show_other_services(query):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(other_services_text, reply_markup=reply_markup)
 
+
 async def show_gpt_services(query):
     """Показать услуги GPT"""
     gpt_services_text = """
@@ -676,6 +653,7 @@ async def show_gpt_services(query):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(gpt_services_text, reply_markup=reply_markup)
+
 
 async def show_twitter_services(query):
     """Показать услуги Twitter/X"""
@@ -788,6 +766,7 @@ async def handle_admin_action(query, data):
     elif action == "stats":
         await show_admin_stats(query)
 
+
 async def handle_deposit_action(query, data):
     """Обработка действий пополнения"""
     action = data.replace("deposit_", "")
@@ -796,6 +775,7 @@ async def handle_deposit_action(query, data):
         await show_card_deposit(query)
     elif action == "crypto":
         await show_crypto_deposit(query)
+
 
 async def handle_crypto_deposit_selection(query, data):
     """Обработка выбора криптовалюты для пополнения"""
@@ -953,6 +933,7 @@ async def handle_crypto_deposit_selection(query, data):
         await query.edit_message_text("❌ Ошибка обработки выбора криптовалюты")
         del user_states[user_id]
 
+
 async def check_payment_background(order_id, currency, expected_amount, user_id):
     """Фоновая проверка платежа"""
     global crypto_checker
@@ -962,7 +943,7 @@ async def check_payment_background(order_id, currency, expected_amount, user_id)
         
         # Проверяем платеж несколько раз с интервалом
         for attempt in range(10):  # 10 попыток
-            await asyncio.sleep(30)  # Ждем 30 секунд между проверками
+            await asyncio.sleep(6)  # Ждем 6 секунд между проверками
             
             if crypto_checker and hasattr(crypto_checker, 'check_payment'):
                 try:
@@ -978,7 +959,7 @@ async def check_payment_background(order_id, currency, expected_amount, user_id)
                         
                         if success:
                             # Обновляем статус заказа
-                            update_order_status(order_id, 'completed', ADMIN_ID, f"Платеж подтвержден: {result.get('tx_hash', 'N/A')}")
+                            _update_order_status_in_supabase(order_id, 'completed', ADMIN_ID, f"Платеж подтвержден: {result.get('tx_hash', 'N/A')}")
                             
                             # Уведомляем пользователя
                             try:
@@ -1129,6 +1110,7 @@ async def show_deposit_options(query):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(deposit_text, reply_markup=reply_markup)
 
+
 async def show_card_deposit(query):
     """Показать пополнение картой"""
     user_id = query.from_user.id
@@ -1190,6 +1172,7 @@ async def show_crypto_deposit(query):
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="wallet_deposit")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(crypto_text, reply_markup=reply_markup)
+
 
 async def show_wallet_history(query):
     """Показать историю кошелька через Supabase"""
@@ -1358,6 +1341,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Пользователь не в состоянии ожидания
         await update.message.reply_text("❌ Используйте кнопки меню для навигации или /start для перезапуска.")
 
+
 async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: dict):
     """Обработка ввода суммы заказа"""
     user_id = update.effective_user.id
@@ -1416,7 +1400,7 @@ async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE
                             # Платеж найден, обрабатываем
                             if crypto_checker.process_payment(result):
                                 # Обновляем статус заказа
-                                update_order_status(order_id, 'completed', ADMIN_ID, f'Криптоплатеж подтвержден: {result["amount"]} {result["currency"]}')
+                                _update_order_status_in_supabase(order_id, 'completed', ADMIN_ID, f'Криптоплатеж подтвержден: {result["amount"]} {result["currency"]}')
                                 
                                 # Выдаем карту
                                 card_info = auto_issue_card(state['service_type'], amount, user_id)
@@ -1614,47 +1598,10 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("❌ Произошла ошибка. Попробуйте еще раз.")
         del user_states[user_id]
 
-# Flask маршруты
-@app.route('/')
-def home():
-    """Главная страница"""
-    return jsonify({
-        'status': 'online',
-        'bot': 'Telegram Financial Bot',
-        'version': '1.0.0',
-        'timestamp': datetime.now().isoformat()
-    })
 
-@app.route('/health')
-def health():
-    """Health check для Render"""
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat()
-    })
-
-@app.route('/stats')
-def stats():
-    try:
-        users_count = supabase.table("wallets").select("user_id").execute().count
-        orders_count = supabase.table("orders").select("id").execute().count
-        total_amount_resp = supabase.table("orders").select("amount").execute()
-        total_amount = sum([o["amount"] for o in total_amount_resp.data])
-
-        return jsonify({
-            "users_count": users_count,
-            "orders_count": orders_count,
-            "total_amount": total_amount,
-            "timestamp": datetime.now().isoformat()
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# API для администраторов через Supabase
-@app.route('/admin/orders', methods=['GET'])
-def get_orders():
-    """Получить все заказы через Supabase"""
+# Internal helper functions for Supabase operations (replacing external API endpoints)
+def _get_orders_from_supabase():
+    """Получить все заказы из Supabase (внутренняя функция)"""
     try:
         # Получаем заказы с балансами пользователей
         orders_resp = supabase.table("orders").select("id,user_id,service_type,amount,status,created_at").order("created_at", desc=True).execute()
@@ -1677,28 +1624,27 @@ def get_orders():
                 'user_balance': wallets_data.get(order["user_id"], 0)
             })
 
-        return jsonify(orders_list)
+        return orders_list
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Ошибка получения заказов: {e}")
+        return []
 
-
-@app.route('/admin/order/<int:order_id>', methods=['GET'])
-def get_order(order_id):
-    """Получить конкретный заказ через Supabase"""
+def _get_order_from_supabase(order_id):
+    """Получить конкретный заказ из Supabase (внутренняя функция)"""
     try:
         # Получаем заказ
         order_resp = supabase.table("orders").select("*").eq("id", order_id).single().execute()
         order = order_resp.data
 
         if not order:
-            return jsonify({'error': 'Заказ не найден'}), 404
+            return None
 
         # Получаем баланс пользователя
         wallet_resp = supabase.table("wallets").select("balance").eq("user_id", order["user_id"]).single().execute()
         balance = wallet_resp.data["balance"] if wallet_resp.data else 0
 
-        return jsonify({
+        return {
             'id': order["id"],
             'user_id': order["user_id"],
             'service_type': order["service_type"],
@@ -1708,24 +1654,15 @@ def get_order(order_id):
             'created_at': order["created_at"],
             'updated_at': order["updated_at"],
             'user_balance': balance
-        })
+        }
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Ошибка получения заказа {order_id}: {e}")
+        return None
 
-
-@app.route('/admin/order/<int:order_id>/status', methods=['POST'])
-def update_order_status(order_id):
-    """Обновить статус заказа через Supabase"""
+def _update_order_status_in_supabase(order_id, new_status, admin_id, notes=''):
+    """Обновить статус заказа в Supabase (внутренняя функция)"""
     try:
-        data = request.get_json()
-        new_status = data.get('status')
-        notes = data.get('notes', '')
-        admin_id = data.get('admin_id')
-
-        if not new_status:
-            return jsonify({'error': 'Статус обязателен'}), 400
-
         # Обновляем статус заказа
         supabase.table("orders").update({
             "status": new_status,
@@ -1741,55 +1678,52 @@ def update_order_status(order_id):
             "created_at": datetime.now().isoformat()
         }).execute()
 
-        return jsonify({'success': True, 'message': 'Статус обновлен'})
+        logger.info(f"Статус заказа {order_id} обновлен на '{new_status}' администратором {admin_id}")
+        return True
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Ошибка обновления статуса заказа {order_id}: {e}")
+        return False
 
-
-@app.route('/admin/wallet/<int:user_id>', methods=['GET'])
-def get_wallet_info(user_id):
-    """Получить информацию о кошельке через Supabase"""
+def _get_wallet_info_from_supabase(user_id):
+    """Получить информацию о кошельке из Supabase (внутренняя функция)"""
     try:
         # Получаем кошелек пользователя
         wallet_resp = supabase.table("wallets").select("balance, created_at").eq("user_id", user_id).single().execute()
         wallet = wallet_resp.data
 
         if not wallet:
-            return jsonify({'error': 'Кошелек не найден'}), 404
+            return None
 
         # Получаем количество транзакций
         transactions_resp = supabase.table("wallet_transactions").select("id", count="exact").eq("user_id", user_id).execute()
         transactions_count = transactions_resp.count or 0
 
-        return jsonify({
+        return {
             'user_id': user_id,
             'balance': wallet['balance'],
             'created_at': wallet['created_at'],
             'transactions_count': transactions_count
-        })
+        }
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Ошибка получения информации о кошельке пользователя {user_id}: {e}")
+        return None
 
-
-@app.route('/admin/wallet/<int:user_id>/deposit', methods=['POST'])
-def deposit_wallet(user_id):
-    """Пополнить кошелек через Supabase"""
+def _deposit_wallet_in_supabase(user_id, amount, admin_id):
+    """Пополнить кошелек в Supabase (внутренняя функция)"""
     try:
-        data = request.get_json()
-        amount = data.get('amount')
-        admin_id = data.get('admin_id')
-
         if not amount or amount <= 0:
-            return jsonify({'error': 'Сумма должна быть больше 0'}), 400
+            logger.error(f"Некорректная сумма для пополнения: {amount}")
+            return False
 
         # Получаем текущий баланс
         wallet_resp = supabase.table("wallets").select("balance").eq("user_id", user_id).single().execute()
         wallet = wallet_resp.data
 
         if not wallet:
-            return jsonify({'error': 'Кошелек не найден'}), 404
+            logger.error(f"Кошелек пользователя {user_id} не найден")
+            return False
 
         new_balance = wallet['balance'] + amount
 
@@ -1805,33 +1739,32 @@ def deposit_wallet(user_id):
             "created_at": datetime.now().isoformat()
         }).execute()
 
-        return jsonify({'success': True, 'message': 'Кошелек пополнен'})
+        logger.info(f"Кошелек пользователя {user_id} пополнен на {amount} USD администратором {admin_id}")
+        return True
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Ошибка пополнения кошелька пользователя {user_id}: {e}")
+        return False
 
-
-@app.route('/admin/wallet/<int:user_id>/withdraw', methods=['POST'])
-def withdraw_wallet(user_id):
-    """Вывести средства из кошелька через Supabase"""
+def _withdraw_wallet_in_supabase(user_id, amount, admin_id):
+    """Вывести средства из кошелька в Supabase (внутренняя функция)"""
     try:
-        data = request.get_json()
-        amount = data.get('amount')
-        admin_id = data.get('admin_id')
-
         if not amount or amount <= 0:
-            return jsonify({'error': 'Сумма должна быть больше 0'}), 400
+            logger.error(f"Некорректная сумма для вывода: {amount}")
+            return False
 
         # Получаем текущий баланс
         wallet_resp = supabase.table("wallets").select("balance").eq("user_id", user_id).single().execute()
         wallet = wallet_resp.data
 
         if not wallet:
-            return jsonify({'error': 'Кошелек не найден'}), 404
+            logger.error(f"Кошелек пользователя {user_id} не найден")
+            return False
 
         current_balance = wallet['balance']
         if current_balance < amount:
-            return jsonify({'error': 'Недостаточно средств'}), 400
+            logger.error(f"Недостаточно средств для вывода: {current_balance} < {amount}")
+            return False
 
         new_balance = current_balance - amount
 
@@ -1847,10 +1780,75 @@ def withdraw_wallet(user_id):
             "created_at": datetime.now().isoformat()
         }).execute()
 
-        return jsonify({'success': True, 'message': 'Средства выведены'})
+        logger.info(f"Из кошелька пользователя {user_id} выведено {amount} USD администратором {admin_id}")
+        return True
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Ошибка вывода средств из кошелька пользователя {user_id}: {e}")
+        return False
+
+
+# Flask маршруты
+@app.route('/')
+def home():
+    """Главная страница"""
+    return jsonify({
+        'status': 'online',
+        'bot': 'Telegram Financial Bot',
+        'version': '1.0.0',
+        'timestamp': datetime.now().isoformat()
+    })
+
+
+@app.route('/health')
+def health():
+    """Health check для Render"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat()
+    })
+
+
+@app.route('/stats')
+def stats():
+    try:
+        users_count = supabase.table("wallets").select("user_id").execute().count
+        orders_count = supabase.table("orders").select("id").execute().count
+        total_amount_resp = supabase.table("orders").select("amount").execute()
+        total_amount = sum([o["amount"] for o in total_amount_resp.data])
+
+        return jsonify({
+            "users_count": users_count,
+            "orders_count": orders_count,
+            "total_amount": total_amount,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# API для администраторов через Supabase - УДАЛЕНО
+# Функциональность перенесена в внутренние функции _get_orders_from_supabase()
+
+
+# GET /admin/order/{id} - УДАЛЕНО
+# Функциональность перенесена в внутренние функции _get_order_from_supabase()
+
+
+# POST /admin/order/{id}/status - УДАЛЕНО
+# Функциональность перенесена в внутренние функции _update_order_status_in_supabase()
+
+
+# GET /admin/wallet/{user_id} - УДАЛЕНО
+# Функциональность перенесена в внутренние функции _get_wallet_info_from_supabase()
+
+
+# POST /admin/wallet/{user_id}/deposit - УДАЛЕНО
+# Функциональность перенесена в внутренние функции _deposit_wallet_in_supabase()
+
+
+# POST /admin/wallet/{user_id}/withdraw - УДАЛЕНО
+# Функциональность перенесена в внутренние функции _withdraw_wallet_in_supabase()
 
 
 # Функция для проверки криптоплатежей

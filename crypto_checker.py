@@ -17,6 +17,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
+
 class SimpleCryptoChecker:
     def __init__(self, db_path="bot_database.db"):
         self.db_path = db_path

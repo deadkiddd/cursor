@@ -18,21 +18,41 @@ from datetime import datetime
 import signal
 import threading
 from crypto_checker import auto_issue_card
-from supabase import create_client, Client
 import atexit
+from database.supabase_integration import (
+    supabase_client, 
+    _update_order_status_in_supabase, 
+    get_top_wallets,
+    _get_user_wallet_data,
+    get_or_create_wallet,
+    update_wallet_balance,
+    add_money_to_wallet,
+    create_order,
+    get_user_orders,
+    get_user_transactions,
+    get_all_orders,
+    get_stats,
+    get_pending_orders,
+    update_order_status,
+    get_order_by_id,
+    get_pending_crypto_orders
+)
+
+# Глобальная переменная для приложения бота
+application = None
 
 
 # Проверка на множественные экземпляры
 def check_single_instance():
     """Проверка, что запущен только один экземпляр бота"""
     lock_file = os.path.join(tempfile.gettempdir(), 'telegram_bot.lock')
-    
+
     try:
         # Проверяем, существует ли файл блокировки
         if os.path.exists(lock_file):
             with open(lock_file, 'r') as f:
                 pid = f.read().strip()
-            
+
             # Проверяем, работает ли процесс
             try:
                 os.kill(int(pid), 0)  # Проверка без отправки сигнала
@@ -42,22 +62,23 @@ def check_single_instance():
             except OSError:
                 # Процесс не существует, удаляем файл блокировки
                 os.remove(lock_file)
-        
+
         # Создаем файл блокировки
         with open(lock_file, 'w') as f:
             f.write(str(os.getpid()))
-            
+
         print(f"✅ Файл блокировки создан (PID: {os.getpid()})")
-        
+
     except Exception as e:
         print(f"⚠️ Ошибка проверки экземпляров: {e}")
 
 
+env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 # Загружаем переменные окружения
 try:
     from dotenv import load_dotenv
     load_dotenv()
-    print("✅ .env файл загружен успешно")
+    print(f"✅ .env файл загружен успешно в {os.path.basename(__file__)}")
 except ImportError:
     print("⚠️ python-dotenv не установлен, используем системные переменные")
 except Exception as e:
@@ -98,132 +119,22 @@ crypto_checker = None
 app = Flask(__name__)
 
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_API_SECRET = os.getenv("SUPABASE_API_SECRET")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_API_SECRET)
-
-
 # Функции для работы с базой данных
 def get_user_wallet(user_id):
     """Получить кошелек пользователя через Supabase"""
     try:
-        # Создаем кошелек, если его нет
-        existing = supabase.table("wallets").select("balance").eq("user_id", user_id).execute()
-        if existing.data:
-            return float(existing.data[0]["balance"])
+        wallet_data = _get_user_wallet_data(user_id)
+        if wallet_data:
+            return float(wallet_data["balance"])
         else:
-            supabase.table("wallets").insert({"user_id": user_id, "balance": 0.0}).execute()
+            # Создаем кошелек если его нет
+            wallet = get_or_create_wallet(user_id)
+            if wallet:
+                return float(wallet.get("balance", 0.0))
             return 0.0
     except Exception as e:
         logger.error(f"Ошибка получения кошелька: {e}")
         return 0.0
-
-
-def get_or_create_wallet(user_id, username=None, first_name=None):
-    """Получить или создать кошелек пользователя через Supabase"""
-    try:
-        wallet = supabase.table("wallets").select("*").eq("user_id", user_id).execute()
-        if wallet.data:
-            w = wallet.data[0]
-            return {
-                "user_id": w["user_id"],
-                "username": w.get("username"),
-                "first_name": w.get("first_name"),
-                "balance": float(w.get("balance", 0.0)),
-                "created_at": w.get("created_at"),
-                "updated_at": w.get("updated_at")
-            }
-        else:
-            now_iso = datetime.now().isoformat()
-            supabase.table("wallets").insert({
-                "user_id": user_id,
-                "username": username,
-                "first_name": first_name,
-                "balance": 0.0,
-                "created_at": now_iso,
-                "updated_at": now_iso
-            }).execute()
-            return {
-                "user_id": user_id,
-                "username": username,
-                "first_name": first_name,
-                "balance": 0.0,
-                "created_at": now_iso,
-                "updated_at": now_iso
-            }
-    except Exception as e:
-        logger.error(f"Ошибка get_or_create_wallet: {e}")
-        return None
-
-
-def update_wallet_balance(user_id, amount, transaction_type, description):
-    """Обновить баланс кошелька через Supabase"""
-    try:
-        # Обновляем баланс
-        supabase.table("wallets").update({
-            "balance": f"balance + {amount}",
-            "updated_at": datetime.now().isoformat()
-        }).eq("user_id", user_id).execute()
-
-        # Добавляем транзакцию
-        supabase.table("wallet_transactions").insert({
-            "user_id": user_id,
-            "amount": amount,
-            "transaction_type": transaction_type,
-            "description": description,
-            "created_at": datetime.now().isoformat()
-        }).execute()
-
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка обновления кошелька: {e}")
-        return False
-
-
-def add_money_to_wallet(user_id, amount, description):
-    """Добавить деньги в кошелек пользователя через Supabase"""
-    try:
-        # Создаем кошелек, если его нет
-        get_or_create_wallet(user_id)
-
-        # Обновляем баланс
-        success = update_wallet_balance(user_id, amount, 'deposit', description)
-
-        if success:
-            logger.info(f"Кошелек пользователя {user_id} пополнен на {amount} USD")
-            return True
-        else:
-            logger.error(f"Ошибка пополнения кошелька пользователя {user_id}")
-            return False
-    except Exception as e:
-        logger.error(f"Ошибка add_money_to_wallet: {e}")
-        return False
-
-
-def create_order(user_id, service_type, amount, description):
-    """Создать новый заказ через Supabase"""
-    try:
-        order_resp = supabase.table("orders").insert({
-            "user_id": user_id,
-            "service_type": service_type,
-            "amount": amount,
-            "status": "pending",
-            "description": description,
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
-        }).execute()
-        order_id = order_resp.data[0]["id"]
-
-        supabase.table("order_status_history").insert({
-            "order_id": order_id,
-            "status": "pending",
-            "notes": "Заказ создан",
-            "created_at": datetime.now().isoformat()
-        }).execute()
-        return order_id
-    except Exception as e:
-        logger.error(f"Ошибка создания заказа: {e}")
-        return None
 
 
 # Основные команды бота
@@ -233,13 +144,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         logger.error("start_command вызвана без сообщения")
         return
-    
+
     user = update.effective_user
     user_id = user.id
-    
+
     # Получаем баланс кошелька
     balance = get_user_wallet(user_id)
-    
+
     welcome_text = f"""
 🤖 Добро пожаловать в SPACE PAY!
 
@@ -248,21 +159,22 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Выберите действие:
 """
-    
+
     keyboard = [
         [InlineKeyboardButton("🛒 Каталог услуг", callback_data="catalog")],
         [InlineKeyboardButton("💰 Мой кошелек", callback_data="wallet")],
         [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")],
         [InlineKeyboardButton("❓ Помощь", callback_data="help")]
     ]
-    
+
     if user_id in ADMIN_IDS:
         keyboard.append([InlineKeyboardButton("🔧 Админ панель", callback_data="admin")])
-    
+
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     # Отправляем новое сообщение
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /help"""
@@ -290,7 +202,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📞 Поддержка:
 • Оператор: @myspacehelper
 """
-    
+
     await update.message.reply_text(help_text)
 
 
@@ -310,16 +222,12 @@ async def check_payment_command(update: Update, context: ContextTypes.DEFAULT_TY
         order_id = int(context.args[0])
 
         # Получаем информацию о заказе через Supabase
-        order_resp = supabase.table("orders")\
-            .select("user_id, service_type, amount, status, description")\
-            .eq("id", order_id)\
-            .execute()
+        order = get_order_by_id(order_id)
 
-        if not order_resp.data:
+        if not order:
             await update.message.reply_text(f"❌ Заказ {order_id} не найден")
             return
 
-        order = order_resp.data[0]
         user_id_order = order["user_id"]
         service_type = order["service_type"]
         amount = order["amount"]
@@ -350,26 +258,28 @@ async def check_payment_command(update: Update, context: ContextTypes.DEFAULT_TY
 async def add_money_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для ручного пополнения кошелька (только для админов)"""
     user_id = update.effective_user.id
-    
+
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("❌ У вас нет прав для использования этой команды")
         return
-    
+
     if len(context.args) < 2:
         await update.message.reply_text("❌ Укажите ID пользователя и сумму\nПример: /add_money 123456789 100")
         return
-    
+
     try:
         target_user_id = int(context.args[0])
         amount = float(context.args[1])
-        
+        print("add_wallet amount to be added: ", amount)
+
         if amount <= 0:
             await update.message.reply_text("❌ Сумма должна быть больше 0")
             return
-        
+
         # Пополняем кошелек
+        logger.info(f"Попытка пополнения кошелька пользователя {target_user_id} на сумму {amount}")
         success = add_money_to_wallet(target_user_id, amount, f"Ручное пополнение администратором {user_id}")
-        
+
         if success:
             # Уведомляем пользователя
             try:
@@ -381,11 +291,11 @@ async def add_money_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception as e:
                 logger.error(f"Ошибка уведомления пользователя: {e}")
-            
+
             await update.message.reply_text(f"✅ Кошелек пользователя {target_user_id} пополнен на {amount:.2f} USD")
         else:
-            await update.message.reply_text("❌ Ошибка пополнения кошелька")
-        
+            await update.message.reply_text(f"❌ Ошибка пополнения кошелька пользователя {target_user_id}. Проверьте логи для деталей.")
+
     except ValueError:
         await update.message.reply_text("❌ Неверный формат данных")
     except Exception as e:
@@ -401,7 +311,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = query.from_user.id
     data = query.data
-    
+
     if data == "catalog":
         await show_catalog(query)
     elif data == "wallet":
@@ -435,14 +345,15 @@ async def show_catalog(query):
 
 Выберите категорию:
 """
-    
+
     keyboard = [
-        [InlineKeyboardButton("🤖 GPT", callback_data="service_gpt")],
-        [InlineKeyboardButton("🐦 Twitter/X", callback_data="service_twitter")],
+        [InlineKeyboardButton("💳 Оплата зарубежной картой", callback_data="service_payment")],
+        # заменить на переводы --
+        [InlineKeyboardButton("💶 Перевод на счёт", callback_data="service_transfers")],
         [InlineKeyboardButton("🔧 Другие сервисы", callback_data="service_other_services")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_main")]
     ]
-    
+
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(catalog_text, reply_markup=reply_markup)
 
@@ -451,7 +362,7 @@ async def show_wallet(query):
     """Показать кошелек пользователя"""
     user_id = query.from_user.id
     balance = get_user_wallet(user_id)
-    
+
     wallet_text = f"""
 💰 Мой кошелек
 
@@ -459,13 +370,13 @@ async def show_wallet(query):
 
 Выберите действие:
 """
-    
+
     keyboard = [
         [InlineKeyboardButton("💳 Пополнить", callback_data="wallet_deposit")],
         [InlineKeyboardButton("📊 История", callback_data="wallet_history")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_main")]
     ]
-    
+
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(wallet_text, reply_markup=reply_markup)
 
@@ -474,11 +385,7 @@ async def show_orders(query):
     """Показать заказы пользователя через Supabase"""
     user_id = query.from_user.id
     try:
-        orders = supabase.table("orders")\
-            .select("id, service_type, amount, status, created_at")\
-            .eq("user_id", user_id)\
-            .order("created_at", desc=True)\
-            .limit(10).execute().data
+        orders = get_user_orders(user_id)
 
         if orders:
             orders_text = "📋 Ваши заказы:\n\n"
@@ -524,7 +431,7 @@ async def show_help(query):
 📞 Поддержка:
 • Оператор: @myspacehelper
 """
-    
+
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_main")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(help_text, reply_markup=reply_markup)
@@ -537,14 +444,14 @@ async def show_admin_panel(query):
 
 Выберите действие:
 """
-    
+
     keyboard = [
         [InlineKeyboardButton("📋 Все заказы", callback_data="admin_orders")],
         [InlineKeyboardButton("💰 Управление кошельками", callback_data="admin_wallets")],
         [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_main")]
     ]
-    
+
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(admin_text, reply_markup=reply_markup)
 
@@ -552,38 +459,13 @@ async def show_admin_panel(query):
 async def handle_service_selection(query, data):
     """Обработка выбора услуги"""
     service_type = data.replace("service_", "")
-    
-    if service_type == "subscriptions":
-        await show_subscriptions(query)
-    elif service_type == "transfers":
+
+    if service_type == "transfers":
         await show_transfers(query)
-    elif service_type == "crypto":
-        await show_crypto(query)
-    elif service_type == "gpt":
-        await show_gpt_services(query)
-    elif service_type == "twitter":
-        await show_twitter_services(query)
+    elif service_type == "payment":
+        await show_payment_services(query)
     elif service_type == "other_services":
         await show_other_services(query)
-
-
-async def show_subscriptions(query):
-    """Показать подписки"""
-    subscriptions_text = """
-🎬 Подписки
-
-Выберите сервис:
-"""
-    
-    keyboard = [
-        [InlineKeyboardButton("Netflix", callback_data="order_netflix")],
-        [InlineKeyboardButton("Steam", callback_data="order_steam")],
-        [InlineKeyboardButton("Discord", callback_data="order_discord")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(subscriptions_text, reply_markup=reply_markup)
 
 
 async def show_transfers(query):
@@ -593,33 +475,15 @@ async def show_transfers(query):
 
 Выберите тип перевода:
 """
-    
+
     keyboard = [
-        [InlineKeyboardButton("💳 Переводы", callback_data="order_transfer")],
+        [InlineKeyboardButton("🇪🇺 Переводы в EC", callback_data="order_transfer_eu")],
+        [InlineKeyboardButton("🇺🇸 Переводы в США", callback_data="order_transfer_us")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
     ]
-    
+
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(transfers_text, reply_markup=reply_markup)
-
-
-async def show_crypto(query):
-    """Показать криптовалюты"""
-    crypto_text = """
-₿ Криптовалюты
-
-Выберите валюту:
-"""
-    
-    keyboard = [
-        [InlineKeyboardButton("Ethereum (ETH)", callback_data="order_crypto_eth")],
-        [InlineKeyboardButton("USDT", callback_data="order_crypto_usdt")],
-        [InlineKeyboardButton("Solana (SOL)", callback_data="order_crypto_sol")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(crypto_text, reply_markup=reply_markup)
 
 
 async def show_other_services(query):
@@ -629,65 +493,51 @@ async def show_other_services(query):
 
 Выберите услугу:
 """
-    
+
     keyboard = [
         [InlineKeyboardButton("🔧 Другие сервисы", callback_data="order_other_services")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
     ]
-    
+
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(other_services_text, reply_markup=reply_markup)
 
 
-async def show_gpt_services(query):
+async def show_payment_services(query):
     """Показать услуги GPT"""
-    gpt_services_text = """
-🤖 GPT сервисы
+    payment_services_text = """
+💳 Оплата любых платежей иностранной картой
 
 Выберите услугу:
 """
-    
+
     keyboard = [
-        [InlineKeyboardButton("🤖 GPT", callback_data="order_gpt")],
+        [InlineKeyboardButton("🤖 ChatGPT Plus", callback_data="order_gpt")],
+        [InlineKeyboardButton("🐦 X / Twitter", callback_data="order_twitter")],
+        [InlineKeyboardButton("🔍 Другое", callback_data="order_other_services")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
     ]
-    
+
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(gpt_services_text, reply_markup=reply_markup)
+    await query.edit_message_text(payment_services_text, reply_markup=reply_markup)
 
-
-async def show_twitter_services(query):
-    """Показать услуги Twitter/X"""
-    twitter_services_text = """
-🐦 Twitter/X сервисы
-
-Выберите услугу:
-"""
-    
-    keyboard = [
-        [InlineKeyboardButton("🐦 Twitter/X", callback_data="order_twitter")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(twitter_services_text, reply_markup=reply_markup)
 
 async def handle_back_button(query, data):
     """Обработка кнопки назад"""
     if data == "back_main":
-        # Просто показываем главное меню через редактирование сообщения
         await show_main_menu(query)
     elif data == "back_catalog":
         await show_catalog(query)
+
 
 async def show_main_menu(query):
     """Показать главное меню"""
     user_id = query.from_user.id
     user = query.from_user
-    
+
     # Получаем баланс кошелька
     balance = get_user_wallet(user_id)
-    
+
     welcome_text = f"""
 🤖 Добро пожаловать в SPACE PAY!
 
@@ -696,34 +546,35 @@ async def show_main_menu(query):
 
 Выберите действие:
 """
-    
+
     keyboard = [
         [InlineKeyboardButton("🛒 Каталог услуг", callback_data="catalog")],
         [InlineKeyboardButton("💰 Мой кошелек", callback_data="wallet")],
         [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")],
         [InlineKeyboardButton("❓ Помощь", callback_data="help")]
     ]
-    
+
     if user_id in ADMIN_IDS:
         keyboard.append([InlineKeyboardButton("🔧 Админ панель", callback_data="admin")])
-    
+
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     # Редактируем сообщение
     await query.edit_message_text(welcome_text, reply_markup=reply_markup)
+
 
 async def handle_order_selection(query, data):
     """Обработка выбора заказа"""
     service_type = data.replace("order_", "")
     user_id = query.from_user.id
-    
+
     # Получаем информацию об услуге
     service_info = get_service_info(service_type)
-    
+
     if not service_info:
         await query.edit_message_text("❌ Услуга не найдена", reply_markup=get_back_keyboard("back_catalog"))
         return
-    
+
     # Показываем информацию об услуге и запрашиваем сумму
     service_text = f"""
 🛒 {service_info['name']}
@@ -734,32 +585,34 @@ async def handle_order_selection(query, data):
 
 Введите сумму заказа (в USD):
 """
-    
+
     # Сохраняем состояние пользователя
     user_states[user_id] = {
         'state': 'waiting_amount',
         'service_type': service_type,
         'service_info': service_info
     }
-    
+
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_catalog")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     await query.edit_message_text(service_text, reply_markup=reply_markup)
+
 
 async def handle_wallet_action(query, data):
     """Обработка действий с кошельком"""
     action = data.replace("wallet_", "")
-    
+
     if action == "deposit":
         await show_deposit_options(query)
     elif action == "history":
         await show_wallet_history(query)
 
+
 async def handle_admin_action(query, data):
     """Обработка админ действий"""
     action = data.replace("admin_", "")
-    
+
     if action == "orders":
         await show_all_orders(query)
     elif action == "wallets":
@@ -771,7 +624,7 @@ async def handle_admin_action(query, data):
 async def handle_deposit_action(query, data):
     """Обработка действий пополнения"""
     action = data.replace("deposit_", "")
-    
+
     if action == "card":
         await show_card_deposit(query)
     elif action == "crypto":
@@ -782,7 +635,7 @@ async def handle_crypto_deposit_selection(query, data):
     """Обработка выбора криптовалюты для пополнения"""
     global crypto_checker
     user_id = query.from_user.id
-    
+
     # Парсим данные: crypto_deposit_btc_100 -> currency=btc, amount=100
     # crypto_deposit_usdc_sol_100 -> currency=usdc_sol, amount=100
     parts = data.split('_')
@@ -795,16 +648,16 @@ async def handle_crypto_deposit_selection(query, data):
             # Для обычных криптовалют
             currency = parts[2]  # btc, eth, usdt, sol
             amount = float(parts[3])  # сумма
-        
+
         # Получаем адрес кошелька и рассчитываем количество криптовалюты
         wallet_address = "Адрес не настроен"
         crypto_amount = 0
-        
+
         # Отладочная информация
         logger.info(f"crypto_checker: {crypto_checker}")
         logger.info(f"currency: {currency}")
         logger.info(f"amount: {amount}")
-        
+
         if crypto_checker and hasattr(crypto_checker, 'wallets') and currency in crypto_checker.wallets:
             wallet_address = crypto_checker.wallets[currency]
             logger.info(f"wallet_address: {wallet_address}")
@@ -831,7 +684,7 @@ async def handle_crypto_deposit_selection(query, data):
             logger.error(f"hasattr wallets: {hasattr(crypto_checker, 'wallets') if crypto_checker else False}")
             if crypto_checker and hasattr(crypto_checker, 'wallets'):
                 logger.error(f"available currencies: {list(crypto_checker.wallets.keys())}")
-            
+
             # Fallback адреса кошельков
             fallback_wallets = {
                 'eth': '0x12E450e53E1acD323B95e36636cB4927aC6C17eE',
@@ -840,11 +693,11 @@ async def handle_crypto_deposit_selection(query, data):
                 'usdc_sol': '6s8bjsP5K3hvdj3bca4FxW8W6CqqSLH26aufVALTJbBq',
                 'usdt_sol': '6s8bjsP5K3hvdj3bca4FxW8W6CqqSLH26aufVALTJbBq'
             }
-            
+
             if currency in fallback_wallets:
                 wallet_address = fallback_wallets[currency]
                 logger.info(f"Используем fallback адрес: {wallet_address}")
-                
+
                 # Fallback расчет криптовалюты
                 fallback_rates = {
                     'eth': 3000.0,
@@ -856,7 +709,7 @@ async def handle_crypto_deposit_selection(query, data):
                 rate = fallback_rates.get(currency, 1.0)
                 crypto_amount = amount / rate if rate > 0 else 0
                 logger.info(f"fallback crypto_amount: {crypto_amount}")
-        
+
         # Получаем текущий курс
         currency_mapping = {
             'eth': 'ethereum',
@@ -865,9 +718,9 @@ async def handle_crypto_deposit_selection(query, data):
             'usdc_sol': 'usd-coin',
             'usdt_sol': 'tether'
         }
-        
+
         coin_id = currency_mapping.get(currency, currency)
-        
+
         # Безопасное получение курса
         current_price = 0
         if crypto_checker and hasattr(crypto_checker, 'get_crypto_price'):
@@ -894,7 +747,7 @@ async def handle_crypto_deposit_selection(query, data):
             }
             current_price = fallback_rates.get(coin_id, 1.0)
             logger.info(f"Используем fallback курс для {coin_id}: {current_price}")
-        
+
         crypto_text = f"""
 ₿ **Пополнение {currency.upper()}**
 
@@ -915,19 +768,19 @@ async def handle_crypto_deposit_selection(query, data):
 
 ⏰ Ожидайте подтверждения платежа...
         """
-        
+
         # Создаем заказ на пополнение
         order_id = create_order(user_id, f'deposit_crypto_{currency}', amount, f"Пополнение {currency.upper()} {amount} USD")
-        
+
         # Запускаем проверку платежа в фоне
         asyncio.create_task(check_payment_background(order_id, currency, crypto_amount, user_id))
-        
+
         keyboard = [
             [InlineKeyboardButton("💰 Мой кошелек", callback_data="wallet")],
             [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await query.edit_message_text(crypto_text, reply_markup=reply_markup, parse_mode='Markdown')
         del user_states[user_id]
     else:
@@ -936,140 +789,59 @@ async def handle_crypto_deposit_selection(query, data):
 
 
 async def check_payment_background(order_id, currency, expected_amount, user_id):
-    """Фоновая проверка платежа"""
+    """Фоновая проверка платежа (отключена для предотвращения постоянных запросов)"""
     global crypto_checker
-    
+
     try:
-        logger.info(f"Начинаем проверку платежа для заказа {order_id}, валюта: {currency}")
-        
-        # Проверяем платеж несколько раз с интервалом
-        for attempt in range(10):  # 10 попыток
-            await asyncio.sleep(6)  # Ждем 6 секунд между проверками
-            
-            if crypto_checker and hasattr(crypto_checker, 'check_payment'):
-                try:
-                    result = crypto_checker.check_payment(currency, expected_amount, order_id)
-                    logger.info(f"Попытка {attempt + 1}: результат проверки: {result}")
-                    
-                    if result.get('success'):
-                        # Платеж найден!
-                        amount = result.get('amount', expected_amount)
-                        
-                        # Пополняем кошелек пользователя
-                        success = add_money_to_wallet(user_id, amount, f"Пополнение {currency.upper()}")
-                        
-                        if success:
-                            # Обновляем статус заказа
-                            _update_order_status_in_supabase(order_id, 'completed', ADMIN_ID, f"Платеж подтвержден: {result.get('tx_hash', 'N/A')}")
-                            
-                            # Уведомляем пользователя
-                            try:
-                                from telegram import Bot
-                                bot = Bot(token=TELEGRAM_BOT_TOKEN)
-                                await bot.send_message(
-                                    chat_id=user_id,
-                                    text=f"✅ **Платеж подтвержден!**\n\n💰 Сумма: {amount:.6f} {currency.upper()}\n💳 Зачислено на кошелек: {amount:.2f} USD\n\n🎉 Ваш кошелек пополнен!"
-                                )
-                            except Exception as e:
-                                logger.error(f"Ошибка уведомления пользователя: {e}")
-                            
-                            logger.info(f"Платеж успешно обработан для заказа {order_id}")
-                            return
-                        else:
-                            logger.error(f"Ошибка пополнения кошелька для заказа {order_id}")
-                    else:
-                        logger.info(f"Платеж не найден, попытка {attempt + 1}")
-                        
-                except Exception as e:
-                    logger.error(f"Ошибка проверки платежа: {e}")
-            else:
-                logger.error("crypto_checker недоступен для проверки платежа")
-                break
-        
-        # Если платеж не найден после всех попыток
-        logger.warning(f"Платеж не найден для заказа {order_id} после 10 попыток")
-        
-        # Уведомляем администратора
+        logger.info(f"Заказ {order_id} создан для ручной проверки платежа, валюта: {currency}")
+
+        # Уведомляем администратора о необходимости ручной проверки
         try:
             from telegram import Bot
             bot = Bot(token=TELEGRAM_BOT_TOKEN)
             await bot.send_message(
                 chat_id=ADMIN_ID,
-                text=f"⚠️ **Платеж не найден**\n\nЗаказ: {order_id}\nВалюта: {currency}\nОжидаемая сумма: {expected_amount}\nПользователь: {user_id}\n\nПроверьте вручную!"
+                text=f"🔍 **Новый заказ на пополнение**\n\n"
+                     f"🆔 Заказ: {order_id}\n"
+                     f"💰 Валюта: {currency.upper()}\n"
+                     f"💵 Ожидаемая сумма: {expected_amount}\n"
+                     f"👤 Пользователь: {user_id}\n\n"
+                     f"⚠️ Требуется ручная проверка платежа!\n"
+                     f"Используйте команду: /check_payment {order_id}"
             )
         except Exception as e:
             logger.error(f"Ошибка уведомления администратора: {e}")
-            
+
+        logger.info(f"Заказ {order_id} ожидает ручной проверки администратором")
+
     except Exception as e:
-        logger.error(f"Ошибка фоновой проверки платежа: {e}")
+        logger.error(f"Ошибка обработки заказа: {e}")
+
 
 def get_service_info(service_type):
     """Получить информацию об услуге"""
     services = {
-        'netflix': {
-            'name': 'Netflix Premium',
-            'description': 'Подписка на Netflix Premium с доступом к 4K контенту',
-            'min_amount': 10,
-            'commission': 0.08
-        },
-        'steam': {
-            'name': 'Steam Gift Cards',
-            'description': 'Подарочные карты Steam для покупки игр',
-            'min_amount': 10,
-            'commission': 0.08
-        },
-        'discord': {
-            'name': 'Discord Nitro',
-            'description': 'Подписка Discord Nitro с эксклюзивными возможностями',
-            'min_amount': 10,
-            'commission': 0.08
-        },
         'spotify': {
             'name': 'Spotify Premium',
             'description': 'Подписка Spotify Premium без рекламы',
             'min_amount': 10,
             'commission': 0.08
         },
-        'youtube': {
-            'name': 'YouTube Premium',
-            'description': 'YouTube Premium с фоновым воспроизведением',
-            'min_amount': 10,
-            'commission': 0.08
-        },
         'transfer_eu': {
             'name': 'Перевод на европейские карты',
             'description': 'Перевод средств на карты европейских банков',
-            'min_amount': 50,
+            'min_amount': 10,
             'commission': 0.08
         },
         'transfer_us': {
             'name': 'Перевод на американские карты',
             'description': 'Перевод средств на карты американских банков',
-            'min_amount': 50,
-            'commission': 0.08
-        },
-        'crypto_eth': {
-            'name': 'Ethereum (ETH)',
-            'description': 'Покупка Ethereum через криптоплатеж',
-            'min_amount': 5,
-            'commission': 0.08
-        },
-        'crypto_usdt': {
-            'name': 'USDT (Ethereum)',
-            'description': 'Покупка USDT через криптоплатеж',
-            'min_amount': 5,
-            'commission': 0.08
-        },
-
-        'crypto_sol': {
-            'name': 'Solana (SOL)',
-            'description': 'Покупка/продажа Solana',
-            'min_amount': 5,
+            'min_amount': 10,
             'commission': 0.08
         },
         'gpt': {
             'name': 'GPT',
-            'description': 'Подписки на GPT сервисы (ChatGPT Plus, Pro, API)',
+            'description': 'Подписки на ChatGPT Plus',
             'min_amount': 20,
             'commission': 0.08
         },
@@ -1086,13 +858,15 @@ def get_service_info(service_type):
             'commission': 0.08
         }
     }
-    
+
     return services.get(service_type)
+
 
 def get_back_keyboard(back_action):
     """Получить клавиатуру с кнопкой назад"""
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=back_action)]]
     return InlineKeyboardMarkup(keyboard)
+
 
 async def show_deposit_options(query):
     """Показать варианты пополнения"""
@@ -1101,13 +875,13 @@ async def show_deposit_options(query):
 
 Выберите способ пополнения:
 """
-    
+
     keyboard = [
-        [InlineKeyboardButton("💳 Банковская карта", callback_data="deposit_card")],
+        [InlineKeyboardButton("💳 Перевод рублей на карту", callback_data="deposit_card")],
         [InlineKeyboardButton("₿ Криптовалюта", callback_data="deposit_crypto")],
         [InlineKeyboardButton("🔙 Назад", callback_data="wallet")]
     ]
-    
+
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(deposit_text, reply_markup=reply_markup)
 
@@ -1115,7 +889,7 @@ async def show_deposit_options(query):
 async def show_card_deposit(query):
     """Показать пополнение картой"""
     user_id = query.from_user.id
-    
+
     card_text = f"""
 💳 Пополнение банковской картой
 
@@ -1128,21 +902,22 @@ async def show_card_deposit(query):
 
 Введите сумму пополнения (в USD):
 """
-    
+
     # Сохраняем состояние пользователя
     user_states[user_id] = {
         'state': 'waiting_deposit_amount',
         'deposit_type': 'card'
     }
-    
+
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="wallet_deposit")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(card_text, reply_markup=reply_markup)
 
+
 async def show_crypto_deposit(query):
     """Показать пополнение криптовалютой"""
     user_id = query.from_user.id
-    
+
     crypto_text = f"""
 ₿ Пополнение криптовалютой
 
@@ -1163,13 +938,13 @@ async def show_crypto_deposit(query):
 
 Введите сумму пополнения (в USD):
 """
-    
+
     # Сохраняем состояние пользователя
     user_states[user_id] = {
         'state': 'waiting_deposit_amount',
         'deposit_type': 'crypto'
     }
-    
+
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="wallet_deposit")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(crypto_text, reply_markup=reply_markup)
@@ -1179,11 +954,7 @@ async def show_wallet_history(query):
     """Показать историю кошелька через Supabase"""
     user_id = query.from_user.id
     try:
-        transactions = supabase.table("wallet_transactions")\
-            .select("*")\
-            .eq("user_id", user_id)\
-            .order("created_at", desc=True)\
-            .limit(10).execute().data
+        transactions = get_user_transactions(user_id)
 
         if transactions:
             history_text = "📊 История транзакций:\n\n"
@@ -1207,14 +978,8 @@ async def show_wallet_history(query):
 async def show_all_orders(query):
     """Показать все заказы (админ) через Supabase"""
     try:
-        # Получаем заказы с балансом пользователя через Supabase
-        orders_resp = supabase.table("orders")\
-            .select("id, user_id, service_type, amount, status, created_at, wallets(balance)")\
-            .order("created_at", desc=True)\
-            .limit(20)\
-            .execute()
-
-        orders = orders_resp.data
+        # Получаем заказы через функцию
+        orders = get_all_orders()
 
         if orders:
             orders_text = "📋 Все заказы:\n\n"
@@ -1251,14 +1016,7 @@ async def show_all_orders(query):
 async def show_wallets_management(query):
     """Показать управление кошельками (админ) через Supabase"""
     try:
-        # Получаем кошельки, сортируя по балансу по убыванию
-        wallets_resp = supabase.table("wallets")\
-            .select("user_id, balance, created_at")\
-            .order("balance", desc=True)\
-            .limit(10)\
-            .execute()
-
-        wallets = wallets_resp.data
+        wallets = get_top_wallets()
 
         if wallets:
             wallets_text = "💰 Управление кошельками:\n\n"
@@ -1286,21 +1044,12 @@ async def show_wallets_management(query):
 async def show_admin_stats(query):
     """Показать статистику (админ) через Supabase"""
     try:
-        # Количество пользователей
-        users_resp = supabase.table("wallets").select("user_id", count="exact").execute()
-        users_count = users_resp.count or 0
-
-        # Количество заказов
-        orders_resp = supabase.table("orders").select("id", count="exact").execute()
-        orders_count = orders_resp.count or 0
-
-        # Общая сумма заказов
-        total_amount_resp = supabase.table("orders").select("amount").execute()
-        total_amount = sum(order["amount"] for order in total_amount_resp.data) if total_amount_resp.data else 0
-
-        # Общий баланс всех кошельков
-        total_balance_resp = supabase.table("wallets").select("balance").execute()
-        total_balance = sum(wallet["balance"] for wallet in total_balance_resp.data) if total_balance_resp.data else 0
+        # Получаем статистику через функцию
+        stats = get_stats()
+        users_count = stats["users_count"]
+        orders_count = stats["orders_count"]
+        total_amount = stats["total_amount"]
+        total_balance = stats["total_balance"]
 
         stats_text = f"""
 📊 Статистика бота:
@@ -1325,11 +1074,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Обработка текстовых сообщений"""
     user_id = update.effective_user.id
     text = update.message.text
-    
+
     # Проверяем состояние пользователя
     if user_id in user_states:
         state = user_states[user_id]
-        
+
         if state['state'] == 'waiting_amount':
             await handle_amount_input(update, context, text, state)
         elif state['state'] == 'waiting_deposit_amount':
@@ -1346,11 +1095,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: dict):
     """Обработка ввода суммы заказа"""
     user_id = update.effective_user.id
-    
+
     try:
         # Парсим сумму
         amount = float(text.replace(',', '.'))
-        
+
         # Проверяем минимальную сумму
         service_info = state['service_info']
         if amount < service_info['min_amount']:
@@ -1359,18 +1108,18 @@ async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"Попробуйте еще раз:"
             )
             return
-        
+
         # Проверяем, является ли это криптоплатежом
         is_crypto_payment = state['service_type'].startswith('crypto_')
-        
+
         if is_crypto_payment:
             # Для криптоплатежей показываем адрес для оплаты
             currency = state['service_type'].replace('crypto_', '')
             global crypto_checker
-            
+
             if crypto_checker:
                 wallet_address = crypto_checker.wallets.get(currency, 'Адрес не настроен')
-                
+
                 crypto_text = f"""
 💳 **Криптоплатеж {currency.upper()}**
 
@@ -1389,10 +1138,10 @@ async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 ⏰ Ожидайте подтверждения платежа...
 """
-                
+
                 # Создаем заказ без списания средств
                 order_id = create_order(user_id, state['service_type'], amount, f"Криптоплатеж {currency.upper()}")
-                
+
                 if order_id:
                     # Проверяем платеж сразу после создания заказа
                     try:
@@ -1402,10 +1151,10 @@ async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE
                             if crypto_checker.process_payment(result):
                                 # Обновляем статус заказа
                                 _update_order_status_in_supabase(order_id, 'completed', ADMIN_ID, f'Криптоплатеж подтвержден: {result["amount"]} {result["currency"]}')
-                                
+
                                 # Выдаем карту
                                 card_info = auto_issue_card(state['service_type'], amount, user_id)
-                                
+
                                 success_text = f"""
 ✅ **Платеж подтвержден!**
 
@@ -1420,26 +1169,26 @@ CVV: {card_info['cvv']}
 
 Спасибо за покупку! 🎉
                                 """
-                                
+
                                 keyboard = [
                                     [InlineKeyboardButton("🛒 Новый заказ", callback_data="catalog")],
                                     [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")]
                                 ]
                                 reply_markup = InlineKeyboardMarkup(keyboard)
-                                
+
                                 await update.message.reply_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
                                 del user_states[user_id]
                                 return
                     except Exception as e:
                         logger.error(f"Ошибка проверки криптоплатежа: {e}")
-                    
+
                     # Если платеж не найден, показываем адрес для оплаты
                     keyboard = [
                         [InlineKeyboardButton("🛒 Новый заказ", callback_data="catalog")],
                         [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
-                    
+
                     await update.message.reply_text(crypto_text, reply_markup=reply_markup, parse_mode='Markdown')
                     del user_states[user_id]
                 else:
@@ -1448,11 +1197,11 @@ CVV: {card_info['cvv']}
                 await update.message.reply_text("❌ Криптоплатежи временно недоступны. Попробуйте позже.")
                 del user_states[user_id]
             return
-        
+
         # Для обычных платежей проверяем баланс
         user_balance = get_user_wallet(user_id)
         total_cost = amount + (amount * service_info['commission'])
-        
+
         if user_balance < total_cost:
             await update.message.reply_text(
                 f"❌ Недостаточно средств на кошельке!\n"
@@ -1462,18 +1211,18 @@ CVV: {card_info['cvv']}
             )
             del user_states[user_id]
             return
-        
+
         # Создаем заказ и списываем средства
         order_id = create_order(user_id, state['service_type'], amount, f"Заказ {service_info['name']}")
-        
+
         if order_id:
             # Списываем средства
             success = update_wallet_balance(user_id, -total_cost, 'purchase', f'Покупка {service_info["name"]}')
-            
+
             if success:
                 # Выдаем карту
                 card_info = auto_issue_card(state['service_type'], amount, user_id)
-                
+
                 success_text = f"""
 ✅ **Заказ выполнен!**
 
@@ -1489,13 +1238,13 @@ CVV: {card_info['cvv']}
 
 Спасибо за покупку! 🎉
                 """
-                
+
                 keyboard = [
                     [InlineKeyboardButton("🛒 Новый заказ", callback_data="catalog")],
                     [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                
+
                 await update.message.reply_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
                 del user_states[user_id]
             else:
@@ -1504,7 +1253,7 @@ CVV: {card_info['cvv']}
         else:
             await update.message.reply_text("❌ Ошибка создания заказа. Попробуйте еще раз.")
             del user_states[user_id]
-            
+
     except ValueError:
         await update.message.reply_text("❌ Неверный формат суммы. Введите число (например: 50.5)")
     except Exception as e:
@@ -1517,11 +1266,11 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
     """Обработка ввода суммы пополнения"""
     user_id = update.effective_user.id
     deposit_type = state['deposit_type']
-    
+
     try:
         # Парсим сумму
         amount = float(text.replace(',', '.'))
-        
+
         # Проверяем минимальную сумму
         min_amount = 10
         if amount < min_amount:
@@ -1530,7 +1279,7 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
                 f"Попробуйте еще раз:"
             )
             return
-        
+
         if deposit_type == 'card':
             # Пополнение банковской картой
             deposit_text = f"""
@@ -1550,19 +1299,19 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
 
 ⏰ Ожидайте подтверждения платежа...
             """
-            
+
             # Создаем заказ на пополнение
             order_id = create_order(user_id, 'deposit_card', amount, f"Пополнение картой {amount} USD")
-            
+
             keyboard = [
                 [InlineKeyboardButton("💰 Мой кошелек", callback_data="wallet")],
                 [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            
+
             await update.message.reply_text(deposit_text, reply_markup=reply_markup, parse_mode='Markdown')
             del user_states[user_id]
-            
+
         elif deposit_type == 'crypto':
             # Пополнение криптовалютой
             # Показываем выбор криптовалюты
@@ -1573,7 +1322,7 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
 
 Выберите криптовалюту:
             """
-            
+
             keyboard = [
                 [InlineKeyboardButton("Ethereum (ETH)", callback_data=f"crypto_deposit_eth_{amount}")],
                 [InlineKeyboardButton("USDT (ERC-20)", callback_data=f"crypto_deposit_usdt_{amount}")],
@@ -1583,210 +1332,21 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
                 [InlineKeyboardButton("🔙 Назад", callback_data="wallet_deposit")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            
+
             # Сохраняем сумму в состоянии
             user_states[user_id] = {
                 'state': 'waiting_crypto_selection',
                 'deposit_amount': amount
             }
-            
+
             await update.message.reply_text(crypto_text, reply_markup=reply_markup, parse_mode='Markdown')
-            
+
     except ValueError:
         await update.message.reply_text("❌ Неверный формат суммы. Введите число (например: 50.5)")
     except Exception as e:
         logger.error(f"Ошибка обработки суммы пополнения: {e}")
         await update.message.reply_text("❌ Произошла ошибка. Попробуйте еще раз.")
         del user_states[user_id]
-
-
-# Internal helper functions for Supabase operations (replacing external API endpoints)
-def _get_orders_from_supabase():
-    """Получить все заказы из Supabase (внутренняя функция)"""
-    try:
-        # Получаем заказы с балансами пользователей
-        orders_resp = supabase.table("orders").select("id,user_id,service_type,amount,status,created_at").order("created_at", desc=True).execute()
-        orders_data = orders_resp.data or []
-
-        # Получаем балансы всех пользователей, чтобы не делать отдельный запрос на каждого
-        user_ids = [order["user_id"] for order in orders_data]
-        wallets_resp = supabase.table("wallets").select("user_id,balance").in_("user_id", user_ids).execute()
-        wallets_data = {w["user_id"]: w["balance"] for w in wallets_resp.data} if wallets_resp.data else {}
-
-        orders_list = []
-        for order in orders_data:
-            orders_list.append({
-                'id': order["id"],
-                'user_id': order["user_id"],
-                'service_type': order["service_type"],
-                'amount': order["amount"],
-                'status': order["status"],
-                'created_at': order["created_at"],
-                'user_balance': wallets_data.get(order["user_id"], 0)
-            })
-
-        return orders_list
-
-    except Exception as e:
-        logger.error(f"Ошибка получения заказов: {e}")
-        return []
-
-def _get_order_from_supabase(order_id):
-    """Получить конкретный заказ из Supabase (внутренняя функция)"""
-    try:
-        # Получаем заказ
-        order_resp = supabase.table("orders").select("*").eq("id", order_id).single().execute()
-        order = order_resp.data
-
-        if not order:
-            return None
-
-        # Получаем баланс пользователя
-        wallet_resp = supabase.table("wallets").select("balance").eq("user_id", order["user_id"]).single().execute()
-        balance = wallet_resp.data["balance"] if wallet_resp.data else 0
-
-        return {
-            'id': order["id"],
-            'user_id': order["user_id"],
-            'service_type': order["service_type"],
-            'amount': order["amount"],
-            'status': order["status"],
-            'description': order.get("description"),
-            'created_at': order["created_at"],
-            'updated_at': order["updated_at"],
-            'user_balance': balance
-        }
-
-    except Exception as e:
-        logger.error(f"Ошибка получения заказа {order_id}: {e}")
-        return None
-
-def _update_order_status_in_supabase(order_id, new_status, admin_id, notes=''):
-    """Обновить статус заказа в Supabase (внутренняя функция)"""
-    try:
-        # Обновляем статус заказа
-        supabase.table("orders").update({
-            "status": new_status,
-            "updated_at": datetime.now().isoformat()
-        }).eq("id", order_id).execute()
-
-        # Добавляем в историю
-        supabase.table("order_status_history").insert({
-            "order_id": order_id,
-            "status": new_status,
-            "admin_id": admin_id,
-            "notes": notes,
-            "created_at": datetime.now().isoformat()
-        }).execute()
-
-        logger.info(f"Статус заказа {order_id} обновлен на '{new_status}' администратором {admin_id}")
-        return True
-
-    except Exception as e:
-        logger.error(f"Ошибка обновления статуса заказа {order_id}: {e}")
-        return False
-
-def _get_wallet_info_from_supabase(user_id):
-    """Получить информацию о кошельке из Supabase (внутренняя функция)"""
-    try:
-        # Получаем кошелек пользователя
-        wallet_resp = supabase.table("wallets").select("balance, created_at").eq("user_id", user_id).single().execute()
-        wallet = wallet_resp.data
-
-        if not wallet:
-            return None
-
-        # Получаем количество транзакций
-        transactions_resp = supabase.table("wallet_transactions").select("id", count="exact").eq("user_id", user_id).execute()
-        transactions_count = transactions_resp.count or 0
-
-        return {
-            'user_id': user_id,
-            'balance': wallet['balance'],
-            'created_at': wallet['created_at'],
-            'transactions_count': transactions_count
-        }
-
-    except Exception as e:
-        logger.error(f"Ошибка получения информации о кошельке пользователя {user_id}: {e}")
-        return None
-
-def _deposit_wallet_in_supabase(user_id, amount, admin_id):
-    """Пополнить кошелек в Supabase (внутренняя функция)"""
-    try:
-        if not amount or amount <= 0:
-            logger.error(f"Некорректная сумма для пополнения: {amount}")
-            return False
-
-        # Получаем текущий баланс
-        wallet_resp = supabase.table("wallets").select("balance").eq("user_id", user_id).single().execute()
-        wallet = wallet_resp.data
-
-        if not wallet:
-            logger.error(f"Кошелек пользователя {user_id} не найден")
-            return False
-
-        new_balance = wallet['balance'] + amount
-
-        # Обновляем баланс кошелька
-        supabase.table("wallets").update({"balance": new_balance, "updated_at": datetime.now().isoformat()}).eq("user_id", user_id).execute()
-
-        # Добавляем транзакцию
-        supabase.table("wallet_transactions").insert({
-            "user_id": user_id,
-            "amount": amount,
-            "transaction_type": "deposit",
-            "description": f"Пополнение администратором {admin_id}",
-            "created_at": datetime.now().isoformat()
-        }).execute()
-
-        logger.info(f"Кошелек пользователя {user_id} пополнен на {amount} USD администратором {admin_id}")
-        return True
-
-    except Exception as e:
-        logger.error(f"Ошибка пополнения кошелька пользователя {user_id}: {e}")
-        return False
-
-def _withdraw_wallet_in_supabase(user_id, amount, admin_id):
-    """Вывести средства из кошелька в Supabase (внутренняя функция)"""
-    try:
-        if not amount or amount <= 0:
-            logger.error(f"Некорректная сумма для вывода: {amount}")
-            return False
-
-        # Получаем текущий баланс
-        wallet_resp = supabase.table("wallets").select("balance").eq("user_id", user_id).single().execute()
-        wallet = wallet_resp.data
-
-        if not wallet:
-            logger.error(f"Кошелек пользователя {user_id} не найден")
-            return False
-
-        current_balance = wallet['balance']
-        if current_balance < amount:
-            logger.error(f"Недостаточно средств для вывода: {current_balance} < {amount}")
-            return False
-
-        new_balance = current_balance - amount
-
-        # Обновляем баланс кошелька
-        supabase.table("wallets").update({"balance": new_balance, "updated_at": datetime.now().isoformat()}).eq("user_id", user_id).execute()
-
-        # Добавляем транзакцию
-        supabase.table("wallet_transactions").insert({
-            "user_id": user_id,
-            "amount": -amount,
-            "transaction_type": "withdraw",
-            "description": f"Вывод администратором {admin_id}",
-            "created_at": datetime.now().isoformat()
-        }).execute()
-
-        logger.info(f"Из кошелька пользователя {user_id} выведено {amount} USD администратором {admin_id}")
-        return True
-
-    except Exception as e:
-        logger.error(f"Ошибка вывода средств из кошелька пользователя {user_id}: {e}")
-        return False
 
 
 # Flask маршруты
@@ -1810,46 +1370,51 @@ def health():
     })
 
 
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Webhook endpoint для получения обновлений от Telegram"""
+    try:
+        # Получаем обновление от Telegram
+        update_data = request.get_json()
+        if update_data and application:
+            # Создаем объект Update из данных
+            update = Update.de_json(update_data, application.bot)
+            # Обрабатываем обновление синхронно
+            application.process_update(update)
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        print(f"❌ Ошибка обработки webhook: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/webhook', methods=['DELETE'])
+def delete_webhook():
+    """Удаление webhook (для отладки)"""
+    try:
+        if application and application.bot:
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(application.bot.delete_webhook())
+            return jsonify({'status': 'webhook deleted'})
+        return jsonify({'status': 'no application'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/stats')
 def stats():
     try:
-        users_count = supabase.table("wallets").select("user_id").execute().count
-        orders_count = supabase.table("orders").select("id").execute().count
-        total_amount_resp = supabase.table("orders").select("amount").execute()
-        total_amount = sum([o["amount"] for o in total_amount_resp.data])
-
+        stats_data = get_stats()
         return jsonify({
-            "users_count": users_count,
-            "orders_count": orders_count,
-            "total_amount": total_amount,
+            "users_count": stats_data["users_count"],
+            "orders_count": stats_data["orders_count"],
+            "total_amount": stats_data["total_amount"],
+            "total_balance": stats_data["total_balance"],
             "timestamp": datetime.now().isoformat()
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-# API для администраторов через Supabase - УДАЛЕНО
-# Функциональность перенесена в внутренние функции _get_orders_from_supabase()
-
-
-# GET /admin/order/{id} - УДАЛЕНО
-# Функциональность перенесена в внутренние функции _get_order_from_supabase()
-
-
-# POST /admin/order/{id}/status - УДАЛЕНО
-# Функциональность перенесена в внутренние функции _update_order_status_in_supabase()
-
-
-# GET /admin/wallet/{user_id} - УДАЛЕНО
-# Функциональность перенесена в внутренние функции _get_wallet_info_from_supabase()
-
-
-# POST /admin/wallet/{user_id}/deposit - УДАЛЕНО
-# Функциональность перенесена в внутренние функции _deposit_wallet_in_supabase()
-
-
-# POST /admin/wallet/{user_id}/withdraw - УДАЛЕНО
-# Функциональность перенесена в внутренние функции _withdraw_wallet_in_supabase()
 
 
 # Функция для проверки криптоплатежей
@@ -1863,13 +1428,7 @@ async def check_crypto_payments():
 
     try:
         # Получаем все pending заказы с криптоплатежами через Supabase
-        pending_resp = supabase.table("orders")\
-            .select("id, user_id, service_type, amount")\
-            .eq("status", "pending")\
-            .like("service_type", "crypto_%")\
-            .execute()
-
-        pending_orders = pending_resp.data or []
+        pending_orders = get_pending_crypto_orders()
 
         for order in pending_orders:
             order_id = order["id"]
@@ -1884,19 +1443,12 @@ async def check_crypto_payments():
 
             if result["success"] and crypto_checker.process_payment(result):
                 # Обновляем статус заказа через Supabase
-                supabase.table("orders").update({
-                    "status": "completed",
-                    "updated_at": datetime.now().isoformat()
-                }).eq("id", order_id).execute()
-
-                # Добавляем запись в историю статусов
-                supabase.table("order_status_history").insert({
-                    "order_id": order_id,
-                    "status": "completed",
-                    "admin_id": ADMIN_ID,
-                    "notes": f'Криптоплатеж подтвержден: {result["amount"]} {result["currency"]}',
-                    "created_at": datetime.now().isoformat()
-                }).execute()
+                update_order_status(
+                    order_id, 
+                    "completed", 
+                    ADMIN_ID, 
+                    f'Криптоплатеж подтвержден: {result["amount"]} {result["currency"]}'
+                )
 
                 # Выдаем карту
                 card_info = auto_issue_card(service_type, amount, user_id)
@@ -2014,27 +1566,13 @@ def main():
     print(f"📊 Порт: {PORT}")
     print(f"👤 Администратор: {ADMIN_ID}")
     
-    # Инициализируем крипточекер
+    # Крипточекер отключен для предотвращения постоянных HTTP запросов
     global crypto_checker
-    try:
-        from crypto_checker import SimpleCryptoChecker
-        crypto_checker = SimpleCryptoChecker()
-        
-        # Проверяем, что методы существуют
-        if hasattr(crypto_checker, 'get_crypto_price') and hasattr(crypto_checker, 'calculate_crypto_amount'):
-            print("✅ Крипточекер инициализирован успешно")
-            print(f"📊 Доступные валюты: {list(crypto_checker.wallets.keys())}")
-        else:
-            print("⚠️ Крипточекер инициализирован, но методы недоступны")
-            crypto_checker = None
-    except ImportError as e:
-        print(f"⚠️ Ошибка импорта crypto_checker_simple: {e}")
-        crypto_checker = None
-    except Exception as e:
-        print(f"⚠️ Ошибка инициализации крипточекера: {e}")
-        crypto_checker = None
+    crypto_checker = None
+    print("⚠️ Крипточекер отключен - постоянные HTTP запросы убраны")
     
     # Создаем приложение
+    global application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
     # Добавляем обработчики
@@ -2052,6 +1590,17 @@ def main():
     def signal_handler(signum, frame):
         print(f"\n🛑 Получен сигнал {signum}, завершение работы...")
         try:
+            # Удаляем webhook если он был установлен
+            if application and application.bot:
+                try:
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(application.bot.delete_webhook())
+                    print("✅ Webhook удален")
+                except Exception as e:
+                    print(f"⚠️ Ошибка удаления webhook: {e}")
+            
             # Удаляем файл блокировки
             lock_file = os.path.join(tempfile.gettempdir(), 'telegram_bot.lock')
             if os.path.exists(lock_file):
@@ -2065,27 +1614,44 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # Запускаем Flask в отдельном потоке
-    def run_flask():
-        app.run(host='0.0.0.0', port=PORT, debug=False)
+    print("🤖 Бот инициализирован и готов к работе!")
     
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
+    # Определяем режим работы (webhook для продакшена, polling для разработки)
+    # Проверяем только RENDER переменную, так как PORT может быть установлен локально
+    is_production = os.getenv('RENDER', False)
     
-    print(f"🌐 Flask сервер запущен на порту {PORT}")
-    
-    print("🤖 Бот запущен и готов к работе!")
-    print("🔍 Криптоплатежи будут проверяться при создании заказов")
-    
-    # Запускаем бота
-    try:
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
-    except KeyboardInterrupt:
-        print("\n🛑 Бот остановлен пользователем")
-        signal_handler(signal.SIGINT, None)
-    except Exception as e:
-        print(f"❌ Ошибка запуска бота: {e}")
-        signal_handler(signal.SIGTERM, None)
+    if is_production:
+        # Webhook режим для продакшена
+        webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'localhost')}/webhook"
+        print(f"🌐 Настройка webhook: {webhook_url}")
+        
+        try:
+            # Устанавливаем webhook асинхронно
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(application.bot.set_webhook(url=webhook_url))
+            print("✅ Webhook установлен успешно")
+            
+            # Запускаем Flask сервер (webhook будет обрабатываться через Flask)
+            print("🤖 Бот запущен в webhook режиме!")
+            app.run(host='0.0.0.0', port=PORT, debug=False)
+            
+        except Exception as e:
+            print(f"❌ Ошибка настройки webhook: {e}")
+            print("🔄 Переключение на polling режим...")
+            application.run_polling(allowed_updates=Update.ALL_TYPES)
+    else:
+        # Polling режим для разработки
+        print("🤖 Бот запущен в polling режиме!")
+        try:
+            application.run_polling(allowed_updates=Update.ALL_TYPES)
+        except KeyboardInterrupt:
+            print("\n🛑 Бот остановлен пользователем")
+            signal_handler(signal.SIGINT, None)
+        except Exception as e:
+            print(f"❌ Ошибка запуска бота: {e}")
+            signal_handler(signal.SIGTERM, None)
 
 
 if __name__ == '__main__':

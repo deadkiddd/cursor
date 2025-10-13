@@ -20,6 +20,8 @@ services:
         sync: false
       - key: SOLSCAN_TOKEN
         sync: false
+      - key: RENDER
+        value: "true"
     healthCheckPath: /health
     autoDeploy: true
     deploy:

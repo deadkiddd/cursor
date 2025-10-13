@@ -42,37 +42,6 @@ from database.supabase_integration import (
 application = None
 
 
-# Проверка на множественные экземпляры
-def check_single_instance():
-    """Проверка, что запущен только один экземпляр бота"""
-    lock_file = os.path.join(tempfile.gettempdir(), 'telegram_bot.lock')
-
-    try:
-        # Проверяем, существует ли файл блокировки
-        if os.path.exists(lock_file):
-            with open(lock_file, 'r') as f:
-                pid = f.read().strip()
-
-            # Проверяем, работает ли процесс
-            try:
-                os.kill(int(pid), 0)  # Проверка без отправки сигнала
-                print(f"❌ Бот уже запущен (PID: {pid})")
-                print("Остановите другой экземпляр бота перед запуском")
-                sys.exit(1)
-            except OSError:
-                # Процесс не существует, удаляем файл блокировки
-                os.remove(lock_file)
-
-        # Создаем файл блокировки
-        with open(lock_file, 'w') as f:
-            f.write(str(os.getpid()))
-
-        print(f"✅ Файл блокировки создан (PID: {os.getpid()})")
-
-    except Exception as e:
-        print(f"⚠️ Ошибка проверки экземпляров: {e}")
-
-
 env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 # Загружаем переменные окружения
 try:
@@ -1550,7 +1519,6 @@ def cleanup_on_exit():
 def main():
     """Основная функция запуска"""
     atexit.register(cleanup_on_exit)
-    check_single_instance() # Вызываем проверку экземпляров перед запуском бота
 
     if not TELEGRAM_BOT_TOKEN:
         print("❌ TELEGRAM_BOT_TOKEN не установлен!")
@@ -1620,38 +1588,37 @@ def main():
     # Проверяем только RENDER переменную, так как PORT может быть установлен локально
     is_production = os.getenv('RENDER', False)
     
-    if is_production:
-        # Webhook режим для продакшена
-        webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'localhost')}/webhook"
-        print(f"🌐 Настройка webhook: {webhook_url}")
-        
-        try:
-            # Устанавливаем webhook асинхронно
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(application.bot.set_webhook(url=webhook_url))
-            print("✅ Webhook установлен успешно")
-            
-            # Запускаем Flask сервер (webhook будет обрабатываться через Flask)
-            print("🤖 Бот запущен в webhook режиме!")
-            app.run(host='0.0.0.0', port=PORT, debug=False)
-            
-        except Exception as e:
-            print(f"❌ Ошибка настройки webhook: {e}")
-            print("🔄 Переключение на polling режим...")
-            application.run_polling(allowed_updates=Update.ALL_TYPES)
-    else:
-        # Polling режим для разработки
-        print("🤖 Бот запущен в polling режиме!")
-        try:
-            application.run_polling(allowed_updates=Update.ALL_TYPES)
-        except KeyboardInterrupt:
-            print("\n🛑 Бот остановлен пользователем")
-            signal_handler(signal.SIGINT, None)
-        except Exception as e:
-            print(f"❌ Ошибка запуска бота: {e}")
-            signal_handler(signal.SIGTERM, None)
+    # if is_production:
+    #     # Webhook режим для продакшена
+    #     webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'localhost')}/webhook"
+    #     print(f"🌐 Настройка webhook: {webhook_url}")
+    #
+    #     try:
+    #         # Устанавливаем webhook асинхронно
+    #         import asyncio
+    #         loop = asyncio.new_event_loop()
+    #         asyncio.set_event_loop(loop)
+    #         loop.run_until_complete(application.bot.set_webhook(url=webhook_url))
+    #         print("✅ Webhook установлен успешно")
+    #
+    #         # Запускаем Flask сервер (webhook будет обрабатываться через Flask)
+    #         print("🤖 Бот запущен в webhook режиме!")
+    #         app.run(host='0.0.0.0', port=PORT, debug=False)
+    #
+    #     except Exception as e:
+    #         print(f"❌ Ошибка настройки webhook: {e}")
+    #         print("🔄 Переключение на polling режим...")
+    #         application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # else:
+    print("🤖 Бот запущен в polling режиме!")
+    try:
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except KeyboardInterrupt:
+        print("\n🛑 Бот остановлен пользователем")
+        signal_handler(signal.SIGINT, None)
+    except Exception as e:
+        print(f"❌ Ошибка запуска бота: {e}")
+        signal_handler(signal.SIGTERM, None)
 
 
 if __name__ == '__main__':

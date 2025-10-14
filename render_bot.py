@@ -1339,38 +1339,6 @@ def health():
     })
 
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Webhook endpoint для получения обновлений от Telegram"""
-    try:
-        # Получаем обновление от Telegram
-        update_data = request.get_json()
-        if update_data and application:
-            # Создаем объект Update из данных
-            update = Update.de_json(update_data, application.bot)
-            # Обрабатываем обновление синхронно
-            application.process_update(update)
-        return jsonify({'status': 'ok'})
-    except Exception as e:
-        print(f"❌ Ошибка обработки webhook: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-@app.route('/webhook', methods=['DELETE'])
-def delete_webhook():
-    """Удаление webhook (для отладки)"""
-    try:
-        if application and application.bot:
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(application.bot.delete_webhook())
-            return jsonify({'status': 'webhook deleted'})
-        return jsonify({'status': 'no application'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
 @app.route('/stats')
 def stats():
     try:
@@ -1533,12 +1501,7 @@ def main():
     print("🚀 Запуск Telegram Financial Bot...")
     print(f"📊 Порт: {PORT}")
     print(f"👤 Администратор: {ADMIN_ID}")
-    
-    # Крипточекер отключен для предотвращения постоянных HTTP запросов
-    global crypto_checker
-    crypto_checker = None
-    print("⚠️ Крипточекер отключен - постоянные HTTP запросы убраны")
-    
+
     # Создаем приложение
     global application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -1557,59 +1520,18 @@ def main():
     # Обработчик сигналов для корректного завершения
     def signal_handler(signum, frame):
         print(f"\n🛑 Получен сигнал {signum}, завершение работы...")
-        try:
-            # Удаляем webhook если он был установлен
-            if application and application.bot:
-                try:
-                    import asyncio
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(application.bot.delete_webhook())
-                    print("✅ Webhook удален")
-                except Exception as e:
-                    print(f"⚠️ Ошибка удаления webhook: {e}")
-            
-            # Удаляем файл блокировки
-            lock_file = os.path.join(tempfile.gettempdir(), 'telegram_bot.lock')
-            if os.path.exists(lock_file):
-                os.remove(lock_file)
-                print("✅ Файл блокировки удален")
-        except Exception as e:
-            print(f"⚠️ Ошибка удаления файла блокировки: {e}")
         sys.exit(0)
     
     # Регистрируем обработчики сигналов
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
-    print("🤖 Бот инициализирован и готов к работе!")
-    
-    # Определяем режим работы (webhook для продакшена, polling для разработки)
-    # Проверяем только RENDER переменную, так как PORT может быть установлен локально
-    is_production = os.getenv('RENDER', False)
-    
-    # if is_production:
-    #     # Webhook режим для продакшена
-    #     webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'localhost')}/webhook"
-    #     print(f"🌐 Настройка webhook: {webhook_url}")
-    #
-    #     try:
-    #         # Устанавливаем webhook асинхронно
-    #         import asyncio
-    #         loop = asyncio.new_event_loop()
-    #         asyncio.set_event_loop(loop)
-    #         loop.run_until_complete(application.bot.set_webhook(url=webhook_url))
-    #         print("✅ Webhook установлен успешно")
-    #
-    #         # Запускаем Flask сервер (webhook будет обрабатываться через Flask)
-    #         print("🤖 Бот запущен в webhook режиме!")
-    #         app.run(host='0.0.0.0', port=PORT, debug=False)
-    #
-    #     except Exception as e:
-    #         print(f"❌ Ошибка настройки webhook: {e}")
-    #         print("🔄 Переключение на polling режим...")
-    #         application.run_polling(allowed_updates=Update.ALL_TYPES)
-    # else:
+
+    def run_app_server():
+        print("Flask сервер запущен")
+        app.run(host='0.0.0.0', port=PORT, debug=False)
+
+    threading.Thread(target=run_app_server, daemon=True).start()
+
     print("🤖 Бот запущен в polling режиме!")
     try:
         application.run_polling(allowed_updates=Update.ALL_TYPES)

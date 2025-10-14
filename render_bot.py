@@ -790,12 +790,6 @@ async def check_payment_background(order_id, currency, expected_amount, user_id)
 def get_service_info(service_type):
     """Получить информацию об услуге"""
     services = {
-        'spotify': {
-            'name': 'Spotify Premium',
-            'description': 'Подписка Spotify Premium без рекламы',
-            'min_amount': 10,
-            'commission': 0.08
-        },
         'transfer_eu': {
             'name': 'Перевод на европейские карты',
             'description': 'Перевод средств на карты европейских банков',
@@ -948,7 +942,7 @@ async def show_all_orders(query):
     """Показать все заказы (админ) через Supabase"""
     try:
         # Получаем заказы через функцию
-        orders = get_all_orders()
+        orders = get_all_orders(limit=20)
 
         if orders:
             orders_text = "📋 Все заказы:\n\n"

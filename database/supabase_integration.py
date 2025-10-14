@@ -371,14 +371,18 @@ def get_user_transactions(user_id):
         return []
 
 
-def get_all_orders():
+def get_all_orders(limit: int = 50):
     """Получить все заказы"""
     
     try:
-        orders_resp = supabase_client.table("orders")\
-            .select("id,user_id,service_type,amount,status,created_at")\
-            .order("created_at", desc=True)\
+        orders_resp = (
+            supabase_client
+            .table("orders")
+            .select("id,user_id,service_type,amount,status,created_at")
+            .order("created_at", desc=True)
+            .limit(limit)  # ← ограничение на количество записей
             .execute()
+        )
         return orders_resp.data or []
     except Exception as e:
         logger.error(f"Ошибка получения всех заказов: {e}")

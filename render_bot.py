@@ -1437,19 +1437,10 @@ def stats():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Обработчик вебхука от Telegram"""
     if request.method == "POST":
         try:
             update = Update.de_json(request.get_json(force=True), application.bot)
-
-            # Создаем event loop и обрабатываем update
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(application.process_update(update))
-            finally:
-                loop.close()
-
+            asyncio.run(application.process_update(update))
             return jsonify({"status": "ok"}), 200
         except Exception as e:
             logger.error(f"Ошибка обработки вебхука: {e}")

@@ -1441,8 +1441,15 @@ def webhook():
     if request.method == "POST":
         try:
             update = Update.de_json(request.get_json(force=True), application.bot)
-            # Создаем новый event loop для обработки update
-            asyncio.run(application.process_update(update))
+
+            # Создаем event loop и обрабатываем update
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(application.process_update(update))
+            finally:
+                loop.close()
+
             return jsonify({"status": "ok"}), 200
         except Exception as e:
             logger.error(f"Ошибка обработки вебхука: {e}")
@@ -1487,6 +1494,8 @@ async def setup_webhook():
     logger.info(f"🔗 Установка вебхука: {webhook_url}")
 
     try:
+        # Инициализируем приложение перед установкой вебхука
+        await application.initialize()
         await application.bot.set_webhook(
             url=webhook_url,
             allowed_updates=Update.ALL_TYPES,
@@ -1513,6 +1522,7 @@ async def run_polling():
     await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
 
     logger.info("🤖 Бот запущен в polling режиме!")
+    logger.info("Нажмите Ctrl+C для остановки...")
 
     # Ждем остановки
     try:

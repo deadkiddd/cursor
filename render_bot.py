@@ -1,17 +1,12 @@
-
 import os
 import logging
 import asyncio
-import tempfile
 import sys
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from flask import Flask, request, jsonify
 from datetime import datetime
-import signal
-import threading
 from crypto_checker import auto_issue_card
-import atexit
 from database.supabase_integration import (
     _update_order_status_in_supabase, 
     get_top_wallets,
@@ -60,11 +55,7 @@ WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')  # Для Render: https://your-app.on
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
-# Проверка переменных окружения
-print("🔍 Проверка переменных окружения:")
 print(f"TELEGRAM_BOT_TOKEN: {'✅ Установлен' if TELEGRAM_BOT_TOKEN else '❌ НЕ УСТАНОВЛЕН'}")
-print(f"ADMIN_ID: {ADMIN_ID if ADMIN_ID else '❌ НЕ УСТАНОВЛЕН'}")
-print(f"PORT: {PORT}")
 
 # Кэш для rate limiting
 user_message_times = {}
@@ -1445,12 +1436,13 @@ def stats():
 
 
 @app.route('/webhook', methods=['POST'])
-async def webhook():
+def webhook():
     """Обработчик вебхука от Telegram"""
     if request.method == "POST":
         try:
             update = Update.de_json(request.get_json(force=True), application.bot)
-            await application.process_update(update)
+            # Создаем новый event loop для обработки update
+            asyncio.run(application.process_update(update))
             return jsonify({"status": "ok"}), 200
         except Exception as e:
             logger.error(f"Ошибка обработки вебхука: {e}")

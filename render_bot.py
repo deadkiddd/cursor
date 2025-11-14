@@ -51,7 +51,7 @@ ADMIN_IDS = [ADMIN_ID]  # Один администратор
 OPERATOR_USERNAME = "@myspacehelper"
 PORT = int(os.getenv('PORT', 10000))
 ENVIRONMENT = os.getenv('ENVIRONMENT', 'local')  # 'local' или 'production'
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')  # Для Render: https://your-app.onrender.com
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')  # Для Render
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
@@ -1481,21 +1481,25 @@ def init_bot():
 
 async def setup_webhook():
     """Настройка вебхука для production"""
-    webhook_url = f"{WEBHOOK_URL}/webhook"
-    logger.info(f"🔗 Установка вебхука: {webhook_url}")
+    await application.initialize()
 
-    try:
-        # Инициализируем приложение перед установкой вебхука
-        await application.initialize()
-        await application.bot.set_webhook(
-            url=webhook_url,
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
-        )
-        logger.info("✅ Вебхук успешно установлен")
-    except Exception as e:
-        logger.error(f"❌ Ошибка установки вебхука: {e}")
-        raise
+    # delete old webhook if exists
+    await application.bot.delete_webhook(drop_pending_updates=True)
+
+    await application.start()
+
+    await application.bot.set_webhook(
+        url=f"{WEBHOOK_URL}/webhook",
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
+
+    # PTB’s internal web server starts automatically
+    await application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="webhook",
+    )
 
 
 async def run_polling():

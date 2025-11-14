@@ -1536,7 +1536,7 @@ def main():
     """Основная функция запуска"""
     init_bot()
 
-    if ENVIRONMENT == 'production':
+    if ENVIRONMENT == 'хуй': # production
         # Production режим (Render) - вебхуки
         if not WEBHOOK_URL:
             logger.error("❌ WEBHOOK_URL не установлен для production!")

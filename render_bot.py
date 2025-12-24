@@ -99,6 +99,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
     user_id = user.id
+
+    # Получаем баланс кошелька
     balance = get_user_wallet(user_id)
 
     welcome_text = f"""
@@ -121,6 +123,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔧 Админ панель", callback_data="admin")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # Отправляем новое сообщение
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 
@@ -132,7 +136,7 @@ help_text = """
 /menu - Каталог услуг
 /orders - Мои заказы
 /help - Эта справка
-/check_payment - Проверить платеж (админы)/check_payment 
+/check_payment - Проверить платеж (админы)
 
 💳 Доступные услуги:
 • Подписки на сервисы
@@ -1331,7 +1335,7 @@ CVV: {card_info['cvv']}
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок"""
     logger.error(f"Ошибка при обработке обновления: {context.error}")
-
+    
     # Получаем информацию о пользователе
     user_info = "Неизвестный пользователь"
     if update:
@@ -1339,7 +1343,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_info = f"{update.effective_user.first_name} (ID: {update.effective_user.id})"
         elif update.callback_query and update.callback_query.from_user:
             user_info = f"{update.callback_query.from_user.first_name} (ID: {update.callback_query.from_user.id})"
-
+    
     # Уведомление администратора об ошибке
     if ADMIN_ID:
         try:
@@ -1347,7 +1351,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             error_text += f"🔍 Детали: {context.error}\n"
             error_text += f"👤 Пользователь: {user_info}\n"
             error_text += f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
-
+            
             # Добавляем тип обновления
             if update:
                 if update.message:
@@ -1355,7 +1359,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif update.callback_query:
                     error_text += f"\n📝 Тип: Callback Query"
                     error_text += f"\n🔘 Данные: {update.callback_query.data}"
-
+            
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text=error_text,
@@ -1363,7 +1367,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logger.error(f"Ошибка уведомления администратора об ошибке: {e}")
-
+    
     # Отправляем сообщение пользователю об ошибке
     try:
         if update and update.effective_chat:
@@ -1437,7 +1441,7 @@ def init_bot():
         logger.error("❌ ADMIN_ID не установлен!")
         sys.exit(1)
 
-    logger.info("🚀 Инициализация Telegram Financial Bot...")
+    logger.info("🚀 Инициализация ТГ бота...")
     logger.info(f"📊 Порт: {PORT}")
     logger.info(f"🌍 Окружение: {ENVIRONMENT}")
     logger.info(f"👤 Администратор: {ADMIN_ID}")
@@ -1452,11 +1456,82 @@ def init_bot():
     application.add_handler(CommandHandler("add_money", add_money_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    
+    # Добавляем обработчик ошибок
     application.add_error_handler(error_handler)
 
     return application
 
 
+async def setup_webhook():
+    """Настройка вебхука для production"""
+    await application.initialize()
+
+    # delete old webhook if exists
+    await application.bot.delete_webhook(drop_pending_updates=True)
+
+    await application.start()
+
+    await application.bot.set_webhook(
+        url=f"{WEBHOOK_URL}/webhook",
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
+
+    # PTB’s internal web server starts automatically
+    await application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="webhook",
+    )
+
+
+async def run_polling():
+    """Запуск polling режима"""
+    try:
+        # Удаляем вебхук если был установлен
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Вебхук удален")
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось удалить вебхук: {e}")
+
+    # Инициализируем и запускаем
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
+    logger.info("🤖 Бот запущен в polling режиме!")
+    logger.info("Нажмите Ctrl+C для остановки...")
+
+    # Ждем остановки
+    try:
+        # Бесконечный цикл
+        await asyncio.Event().wait()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("\n🛑 Получен сигнал остановки...")
+    finally:
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+        logger.info("✅ Бот остановлен")
+
+
+def main():
+    """Основная функция запуска"""
+    init_bot()
+
+    if ENVIRONMENT == 'хуй': # production
+        # Production режим (Render) - вебхуки
+        if not WEBHOOK_URL:
+            logger.error("❌ WEBHOOK_URL не установлен для production!")
+            sys.exit(1)
+
+        logger.info("🌐 Запуск в production режиме (вебхуки)")
+
+        # Настраиваем вебхук при старте
+        asyncio.run(setup_webhook())
+
+        # Запускаем Flask
 async def setup_webhook():
     """Настройка вебхука для production"""
     await application.initialize()

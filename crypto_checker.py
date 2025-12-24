@@ -303,6 +303,7 @@ class SimpleCryptoChecker:
             logger.warning(f"Платеж не найден: {result.get('message', result.get('error', 'Неизвестная ошибка'))}")
             return False
 
+
 # Функция для автоматической выдачи карт (замените на вашу логику)
 def auto_issue_card(service_type, amount, user_id):
     """Автоматическая выдача карты после подтверждения платежа"""
@@ -326,20 +327,3 @@ def auto_issue_card(service_type, amount, user_id):
         logger.error(f"Ошибка выдачи карты: {e}")
         return None
 
-# Пример использования
-if __name__ == "__main__":
-    # Инициализация
-    checker = SimpleCryptoChecker()
-    
-    # Проверка платежей
-    print("Проверка ETH платежа...")
-    eth_result = checker.check_eth_payment(0.001, 1)
-    print(f"ETH результат: {eth_result}")
-    
-    print("Проверка USDT платежа...")
-    usdt_result = checker.check_usdt_payment(5, 1)
-    print(f"USDT результат: {usdt_result}")
-    
-    print("Проверка SOL платежа...")
-    sol_result = checker.check_sol_payment(0.01, 1)
-    print(f"SOL результат: {sol_result}")

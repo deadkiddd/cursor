@@ -1,26 +1,13 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-Файл для деплоя на Render.com
-Поддерживает webhook и polling режимы
-"""
-
 import os
 import logging
 import asyncio
-import tempfile
 import sys
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from flask import Flask, request, jsonify
 from datetime import datetime
-import signal
-import threading
 from crypto_checker import auto_issue_card
-import atexit
 from database.supabase_integration import (
-    supabase_client, 
     _update_order_status_in_supabase, 
     get_top_wallets,
     _get_user_wallet_data,
@@ -32,14 +19,10 @@ from database.supabase_integration import (
     get_user_transactions,
     get_all_orders,
     get_stats,
-    get_pending_orders,
     update_order_status,
     get_order_by_id,
     get_pending_crypto_orders
 )
-
-# Глобальная переменная для приложения бота
-application = None
 
 
 env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
@@ -67,12 +50,12 @@ ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
 ADMIN_IDS = [ADMIN_ID]  # Один администратор
 OPERATOR_USERNAME = "@myspacehelper"
 PORT = int(os.getenv('PORT', 10000))
+ENVIRONMENT = os.getenv('ENVIRONMENT', 'local')  # 'local' или 'production'
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')  # Для Render
 
-# Проверка переменных окружения
-print("🔍 Проверка переменных окружения:")
-print(f"TELEGRAM_BOT_TOKEN: {'✅ Установлен' if TELEGRAM_BOT_TOKEN else '❌ НЕ УСТАНОВЛЕН'}")
-print(f"ADMIN_ID: {ADMIN_ID if ADMIN_ID else '❌ НЕ УСТАНОВЛЕН'}")
-print(f"PORT: {PORT}")
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
+
+print(f"TELEGRAM BOT TOKEN: {'✅ Установлен' if TELEGRAM_BOT_TOKEN else '❌ НЕ УСТАНОВЛЕН'}")
 
 # Кэш для rate limiting
 user_message_times = {}
@@ -116,8 +99,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
     user_id = user.id
-
-    # Получаем баланс кошелька
     balance = get_user_wallet(user_id)
 
     welcome_text = f"""
@@ -140,23 +121,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔧 Админ панель", callback_data="admin")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-
-    # Отправляем новое сообщение
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /help"""
-    help_text = """
+help_text = """
 ❓ Справка по использованию бота:
 
 📋 Основные команды:
 /start - Главное меню
-/menu - Каталог услуг  
-/wallet - Мой кошелек
+/menu - Каталог услуг
 /orders - Мои заказы
 /help - Эта справка
-/check_payment - Проверить платеж (админы)
+/check_payment - Проверить платеж (админы)/check_payment 
 
 💳 Доступные услуги:
 • Подписки на сервисы
@@ -171,6 +147,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📞 Поддержка:
 • Оператор: @myspacehelper
 """
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /help"""
 
     await update.message.reply_text(help_text)
 
@@ -252,8 +232,6 @@ async def add_money_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if success:
             # Уведомляем пользователя
             try:
-                from telegram import Bot
-                bot = Bot(token=TELEGRAM_BOT_TOKEN)
                 await bot.send_message(
                     chat_id=target_user_id,
                     text=f"💰 **Кошелек пополнен!**\n\n💵 Сумма: {amount:.2f} USD\n\n🎉 Ваш баланс обновлен!"
@@ -377,29 +355,6 @@ async def show_orders(query):
 
 async def show_help(query):
     """Показать справку"""
-    help_text = """
-❓ Справка по использованию бота:
-
-📋 Основные команды:
-/start - Главное меню
-/menu - Каталог услуг  
-/wallet - Мой кошелек
-/orders - Мои заказы
-/help - Эта справка
-
-💳 Доступные услуги:
-• Подписки на сервисы
-• Переводы на карты
-• Другие услуги
-
-💰 Оплата:
-• Внутренний кошелек
-• Банковские карты
-• Криптовалюты
-
-📞 Поддержка:
-• Оператор: @myspacehelper
-"""
 
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_main")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -473,7 +428,7 @@ async def show_other_services(query):
 
 
 async def show_payment_services(query):
-    """Показать услуги GPT"""
+    """Показать услуги оплаты зарубежной картой"""
     payment_services_text = """
 💳 Оплата любых платежей иностранной картой
 
@@ -549,8 +504,8 @@ async def handle_order_selection(query, data):
 🛒 {service_info['name']}
 
 📝 Описание: {service_info['description']}
-💰 Минимальная сумма: {service_info['min_amount']} USD
-💸 Комиссия: {service_info['commission']*100}%
+{f"💰 Минимальная сумма: {service_info['min_amount']} USD" if service_info.get('min_amount') is not None else ""}
+{f"💸 Комиссия: {service_info['commission']*100}% USD" if service_info.get('min_amount') is not None else ""}
 
 Введите сумму заказа (в USD):
 """
@@ -602,7 +557,6 @@ async def handle_deposit_action(query, data):
 
 async def handle_crypto_deposit_selection(query, data):
     """Обработка выбора криптовалюты для пополнения"""
-    global crypto_checker
     user_id = query.from_user.id
 
     # Парсим данные: crypto_deposit_btc_100 -> currency=btc, amount=100
@@ -759,15 +713,12 @@ async def handle_crypto_deposit_selection(query, data):
 
 async def check_payment_background(order_id, currency, expected_amount, user_id):
     """Фоновая проверка платежа (отключена для предотвращения постоянных запросов)"""
-    global crypto_checker
 
     try:
         logger.info(f"Заказ {order_id} создан для ручной проверки платежа, валюта: {currency}")
 
         # Уведомляем администратора о необходимости ручной проверки
         try:
-            from telegram import Bot
-            bot = Bot(token=TELEGRAM_BOT_TOKEN)
             await bot.send_message(
                 chat_id=ADMIN_ID,
                 text=f"🔍 **Новый заказ на пополнение**\n\n"
@@ -804,8 +755,8 @@ def get_service_info(service_type):
         },
         'gpt': {
             'name': 'GPT',
-            'description': 'Подписки на ChatGPT Plus',
-            'min_amount': 20,
+            'description': 'Оплата подписки ChatGPT Plus (только Плюс)',
+            'min_amount': 22.4,
             'commission': 0.08
         },
         'twitter': {
@@ -1078,7 +1029,6 @@ async def handle_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE
         if is_crypto_payment:
             # Для криптоплатежей показываем адрес для оплаты
             currency = state['service_type'].replace('crypto_', '')
-            global crypto_checker
 
             if crypto_checker:
                 wallet_address = crypto_checker.wallets.get(currency, 'Адрес не настроен')
@@ -1170,7 +1120,7 @@ CVV: {card_info['cvv']}
                 f"❌ Недостаточно средств на кошельке!\n"
                 f"💰 Необходимо: {total_cost:.2f} USD\n"
                 f"💳 Доступно: {user_balance:.2f} USD\n\n"
-                f"Пополните кошелек через /wallet"
+                f"Пополните кошелек через /start -> Мой Кошелек"
             )
             del user_states[user_id]
             return
@@ -1312,6 +1262,119 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
         del user_states[user_id]
 
 
+# Функция для проверки криптоплатежей
+async def check_crypto_payments():
+    """Проверка криптоплатежей через Supabase в фоновом режиме"""
+
+    if not crypto_checker:
+        logger.warning("Крипточекер не инициализирован")
+        return
+
+    try:
+        # Получаем все pending заказы с криптоплатежами через Supabase
+        pending_orders = get_pending_crypto_orders()
+
+        for order in pending_orders:
+            order_id = order["id"]
+            user_id = order["user_id"]
+            service_type = order["service_type"]
+            amount = order["amount"]
+
+            currency = service_type.replace("crypto_", "")
+
+            # Проверяем платеж
+            result = crypto_checker.check_payment(currency, amount, order_id)
+
+            if result["success"] and crypto_checker.process_payment(result):
+                # Обновляем статус заказа через Supabase
+                update_order_status(
+                    order_id,
+                    "completed",
+                    ADMIN_ID,
+                    f'Криптоплатеж подтвержден: {result["amount"]} {result["currency"]}'
+                )
+
+                # Выдаем карту
+                card_info = auto_issue_card(service_type, amount, user_id)
+
+                # Уведомляем пользователя
+                try:
+                    success_text = f"""
+✅ **Платеж подтвержден!**
+
+💰 Сумма: {result['amount']} {result['currency'].upper()}
+🆔 Заказ: #{order_id}
+📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+
+🎫 **Ваша карта:**
+Номер: {card_info['card_number']}
+Срок: {card_info['expiry']}
+CVV: {card_info['cvv']}
+
+Спасибо за покупку! 🎉
+                    """
+
+                    await application.bot.send_message(
+                        chat_id=user_id,
+                        text=success_text,
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка уведомления пользователя {user_id}: {e}")
+
+                logger.info(f"Заказ {order_id} обработан успешно")
+
+    except Exception as e:
+        logger.error(f"Ошибка проверки криптоплатежей: {e}")
+
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок"""
+    logger.error(f"Ошибка при обработке обновления: {context.error}")
+
+    # Получаем информацию о пользователе
+    user_info = "Неизвестный пользователь"
+    if update:
+        if update.effective_user:
+            user_info = f"{update.effective_user.first_name} (ID: {update.effective_user.id})"
+        elif update.callback_query and update.callback_query.from_user:
+            user_info = f"{update.callback_query.from_user.first_name} (ID: {update.callback_query.from_user.id})"
+
+    # Уведомление администратора об ошибке
+    if ADMIN_ID:
+        try:
+            error_text = f"❌ **Ошибка в боте:**\n\n"
+            error_text += f"🔍 Детали: {context.error}\n"
+            error_text += f"👤 Пользователь: {user_info}\n"
+            error_text += f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+
+            # Добавляем тип обновления
+            if update:
+                if update.message:
+                    error_text += f"\n📝 Тип: Сообщение"
+                elif update.callback_query:
+                    error_text += f"\n📝 Тип: Callback Query"
+                    error_text += f"\n🔘 Данные: {update.callback_query.data}"
+
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=error_text,
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logger.error(f"Ошибка уведомления администратора об ошибке: {e}")
+
+    # Отправляем сообщение пользователю об ошибке
+    try:
+        if update and update.effective_chat:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ Произошла ошибка при обработке запроса. Попробуйте еще раз или используйте /start для перезапуска."
+            )
+    except Exception as e:
+        logger.error(f"Ошибка отправки сообщения пользователю: {e}")
+
+
 # Flask маршруты
 @app.route('/')
 def home():
@@ -1320,6 +1383,7 @@ def home():
         'status': 'online',
         'bot': 'Telegram Financial Bot',
         'version': '1.0.0',
+        'environment': ENVIRONMENT,
         'timestamp': datetime.now().isoformat()
     })
 
@@ -1345,198 +1409,136 @@ def stats():
             "timestamp": datetime.now().isoformat()
         })
     except Exception as e:
+        logger.error(f"Ошибка получения /stats: {e}")
         return jsonify({"error": str(e)}), 500
 
 
-# Функция для проверки криптоплатежей
-async def check_crypto_payments():
-    """Проверка криптоплатежей через Supabase в фоновом режиме"""
-    global crypto_checker
-
-    if not crypto_checker:
-        logger.warning("Крипточекер не инициализирован")
-        return
-
-    try:
-        # Получаем все pending заказы с криптоплатежами через Supabase
-        pending_orders = get_pending_crypto_orders()
-
-        for order in pending_orders:
-            order_id = order["id"]
-            user_id = order["user_id"]
-            service_type = order["service_type"]
-            amount = order["amount"]
-
-            currency = service_type.replace("crypto_", "")
-
-            # Проверяем платеж
-            result = crypto_checker.check_payment(currency, amount, order_id)
-
-            if result["success"] and crypto_checker.process_payment(result):
-                # Обновляем статус заказа через Supabase
-                update_order_status(
-                    order_id, 
-                    "completed", 
-                    ADMIN_ID, 
-                    f'Криптоплатеж подтвержден: {result["amount"]} {result["currency"]}'
-                )
-
-                # Выдаем карту
-                card_info = auto_issue_card(service_type, amount, user_id)
-
-                # Уведомляем пользователя
-                try:
-                    from telegram.ext import Application
-                    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-                    success_text = f"""
-✅ **Платеж подтвержден!**
-
-💰 Сумма: {result['amount']} {result['currency'].upper()}
-🆔 Заказ: #{order_id}
-📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
-
-🎫 **Ваша карта:**
-Номер: {card_info['card_number']}
-Срок: {card_info['expiry']}
-CVV: {card_info['cvv']}
-
-Спасибо за покупку! 🎉
-                    """
-
-                    await app.bot.send_message(
-                        chat_id=user_id,
-                        text=success_text,
-                        parse_mode='Markdown'
-                    )
-                except Exception as e:
-                    logger.error(f"Ошибка уведомления пользователя {user_id}: {e}")
-
-                logger.info(f"Заказ {order_id} обработан успешно")
-
-    except Exception as e:
-        logger.error(f"Ошибка проверки криптоплатежей: {e}")
-
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик ошибок"""
-    logger.error(f"Ошибка при обработке обновления: {context.error}")
-    
-    # Получаем информацию о пользователе
-    user_info = "Неизвестный пользователь"
-    if update:
-        if update.effective_user:
-            user_info = f"{update.effective_user.first_name} (ID: {update.effective_user.id})"
-        elif update.callback_query and update.callback_query.from_user:
-            user_info = f"{update.callback_query.from_user.first_name} (ID: {update.callback_query.from_user.id})"
-    
-    # Уведомление администратора об ошибке
-    if ADMIN_ID:
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if request.method == "POST":
         try:
-            error_text = f"❌ **Ошибка в боте:**\n\n"
-            error_text += f"🔍 Детали: {context.error}\n"
-            error_text += f"👤 Пользователь: {user_info}\n"
-            error_text += f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
-            
-            # Добавляем тип обновления
-            if update:
-                if update.message:
-                    error_text += f"\n📝 Тип: Сообщение"
-                elif update.callback_query:
-                    error_text += f"\n📝 Тип: Callback Query"
-                    error_text += f"\n🔘 Данные: {update.callback_query.data}"
-            
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=error_text,
-                parse_mode='Markdown'
-            )
+            update = Update.de_json(request.get_json(force=True), application.bot)
+            asyncio.run(application.process_update(update))
+            return jsonify({"status": "ok"}), 200
         except Exception as e:
-            logger.error(f"Ошибка уведомления администратора об ошибке: {e}")
-    
-    # Отправляем сообщение пользователю об ошибке
-    try:
-        if update and update.effective_chat:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="❌ Произошла ошибка при обработке запроса. Попробуйте еще раз или используйте /start для перезапуска."
-            )
-    except Exception as e:
-        logger.error(f"Ошибка отправки сообщения пользователю: {e}")
+            logger.error(f"Ошибка обработки вебхука: {e}")
+            return jsonify({"error": str(e)}), 500
 
 
-def cleanup_on_exit():
-    """Очистка при выходе"""
-    try:
-        # Remove lock file
-        lock_file = os.path.join(tempfile.gettempdir(), 'telegram_bot.lock')
-        if os.path.exists(lock_file):
-            os.remove(lock_file)
-            print("✅ Файл блокировки удален")
-    except Exception as e:
-        print(f"⚠️ Ошибка очистки: {e}")
-
-
-# Основная функция запуска
-def main():
-    """Основная функция запуска"""
-    atexit.register(cleanup_on_exit)
+def init_bot():
+    """Инициализация бота"""
+    global application
 
     if not TELEGRAM_BOT_TOKEN:
-        print("❌ TELEGRAM_BOT_TOKEN не установлен!")
-        print("Установите переменную окружения TELEGRAM_BOT_TOKEN")
+        logger.error("❌ TELEGRAM_BOT_TOKEN не установлен!")
         sys.exit(1)
-    
+
     if not ADMIN_ID:
-        print("❌ ADMIN_ID не установлен!")
-        print("Установите переменную окружения ADMIN_ID")
+        logger.error("❌ ADMIN_ID не установлен!")
         sys.exit(1)
-    
-    print("🚀 Запуск Telegram Financial Bot...")
-    print(f"📊 Порт: {PORT}")
-    print(f"👤 Администратор: {ADMIN_ID}")
+
+    logger.info("🚀 Инициализация Telegram Financial Bot...")
+    logger.info(f"📊 Порт: {PORT}")
+    logger.info(f"🌍 Окружение: {ENVIRONMENT}")
+    logger.info(f"👤 Администратор: {ADMIN_ID}")
 
     # Создаем приложение
-    global application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Добавляем обработчики
+
+    # Добавляем обработчики команд
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("check_payment", check_payment_command))
     application.add_handler(CommandHandler("add_money", add_money_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-    
-    # Добавляем обработчик ошибок
     application.add_error_handler(error_handler)
-    
-    # Обработчик сигналов для корректного завершения
-    def signal_handler(signum, frame):
-        print(f"\n🛑 Получен сигнал {signum}, завершение работы...")
-        sys.exit(0)
-    
-    # Регистрируем обработчики сигналов
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
 
-    def run_app_server():
-        print("Flask сервер запущен")
+    return application
+
+
+async def setup_webhook():
+    """Настройка вебхука для production"""
+    await application.initialize()
+
+    # delete old webhook if exists
+    await application.bot.delete_webhook(drop_pending_updates=True)
+
+    await application.start()
+
+    await application.bot.set_webhook(
+        url=f"{WEBHOOK_URL}/webhook",
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
+
+    # PTB’s internal web server starts automatically
+    await application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="webhook",
+    )
+
+
+async def run_polling():
+    """Запуск polling режима"""
+    try:
+        # Удаляем вебхук если был установлен
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Вебхук удален")
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось удалить вебхук: {e}")
+
+    # Инициализируем и запускаем
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
+    logger.info("🤖 Бот запущен в polling режиме!")
+    logger.info("Нажмите Ctrl+C для остановки...")
+
+    # Ждем остановки
+    try:
+        # Бесконечный цикл
+        await asyncio.Event().wait()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("\n🛑 Получен сигнал остановки...")
+    finally:
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+        logger.info("✅ Бот остановлен")
+
+
+def main():
+    """Основная функция запуска"""
+    init_bot()
+
+    if ENVIRONMENT == 'production':
+        # Production режим (Render) - вебхуки
+        if not WEBHOOK_URL:
+            logger.error("❌ WEBHOOK_URL не установлен для production!")
+            sys.exit(1)
+
+        logger.info("🌐 Запуск в production режиме (вебхуки)")
+
+        # Настраиваем вебхук при старте
+        asyncio.run(setup_webhook())
+
+        # Запускаем Flask
         app.run(host='0.0.0.0', port=PORT, debug=False)
 
-    threading.Thread(target=run_app_server, daemon=True).start()
+    else:
+        # Local режим - polling
+        logger.info("🖥️  Запуск в локальном режиме (polling)")
 
-    print("🤖 Бот запущен в polling режиме!")
-    try:
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
-    except KeyboardInterrupt:
-        print("\n🛑 Бот остановлен пользователем")
-        signal_handler(signal.SIGINT, None)
-    except Exception as e:
-        print(f"❌ Ошибка запуска бота: {e}")
-        signal_handler(signal.SIGTERM, None)
+        try:
+            asyncio.run(run_polling())
+        except KeyboardInterrupt:
+            logger.info("\n🛑 Бот остановлен пользователем")
+        except Exception as e:
+            logger.error(f"❌ Ошибка запуска бота: {e}")
 
 
 if __name__ == '__main__':
     main()
-
